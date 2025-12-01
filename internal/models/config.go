@@ -1,0 +1,73 @@
+package models
+
+import "time"
+
+// Config holds application configuration
+type Config struct {
+	// Data paths
+	DataPath string
+
+	// Plan configuration
+	Plan           string
+	CustomToken    int
+	CustomCost     float64
+	CustomMessages int
+
+	// Display configuration
+	ViewMode      ViewMode
+	RefreshRate   time.Duration
+	Timezone      *time.Location
+	Theme         Theme
+	HoursBack     int
+
+	// Feature flags
+	ShowWeekly bool
+}
+
+// ViewMode represents the display mode
+type ViewMode string
+
+const (
+	ViewModeRealtime ViewMode = "realtime"
+	ViewModeDaily    ViewMode = "daily"
+	ViewModeMonthly  ViewMode = "monthly"
+)
+
+// Theme represents the colour theme
+type Theme string
+
+const (
+	ThemeAuto  Theme = "auto"
+	ThemeLight Theme = "light"
+	ThemeDark  Theme = "dark"
+)
+
+// DefaultConfig returns the default configuration
+func DefaultConfig() *Config {
+	return &Config{
+		DataPath:       "",  // Will be set to ~/.claude/projects
+		Plan:           "max5",
+		ViewMode:       ViewModeRealtime,
+		RefreshRate:    30 * time.Second, // Default for JSONL mode, adjusted to 60s for OAuth
+		Timezone:       time.Local,
+		Theme:          ThemeAuto,
+		HoursBack:      24,
+		ShowWeekly:     true, // Shows estimated weekly usage based on recent activity
+		CustomToken:    0,
+		CustomCost:     0,
+		CustomMessages: 0,
+	}
+}
+
+// GetEffectiveLimits returns the limits based on config
+func (c *Config) GetEffectiveLimits() Limits {
+	if c.Plan == "custom" && c.CustomToken > 0 {
+		return Limits{
+			PlanName:     "Custom",
+			TokenLimit:   c.CustomToken,
+			CostLimitUSD: c.CustomCost,
+			MessageLimit: c.CustomMessages,
+		}
+	}
+	return GetLimits(c.Plan)
+}
