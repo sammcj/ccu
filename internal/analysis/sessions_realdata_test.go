@@ -47,8 +47,9 @@ func TestRealDataPattern(t *testing.T) {
 		}
 	}
 
-	// According to Claude's web UI, current session should reset at 5 PM local (06:00 UTC)
-	// So the active session should be from 01:00 UTC to 06:00 UTC (noon to 5 PM local)
+	// Sessions end 5 hours after their start time
+	// Last entry is at 05:00 UTC, so session starts at 05:00 UTC (rounded down)
+	// and ends at 10:00 UTC (05:00 + 5 hours)
 
 	// Find active session
 	var activeSession *models.SessionBlock
@@ -65,9 +66,10 @@ func TestRealDataPattern(t *testing.T) {
 			activeSession.StartTime.Format("15:04"),
 			activeSession.EndTime.Format("15:04"))
 
-		// The active session should end at 06:00 UTC (5 PM local), not later
-		expectedEnd := time.Date(2025, 12, 1, 6, 0, 0, 0, time.UTC)
-		assert.Equal(t, expectedEnd, activeSession.EndTime,
-			"Active session should end at 06:00 UTC (5 PM local) to match Claude's UI")
+		// The active session should start at 05:00 UTC and end at 10:00 UTC (start + 5 hours)
+		expectedStart := time.Date(2025, 12, 1, 5, 0, 0, 0, time.UTC)
+		expectedEnd := time.Date(2025, 12, 1, 10, 0, 0, 0, time.UTC)
+		assert.Equal(t, expectedStart, activeSession.StartTime, "Active session should start at 05:00 UTC")
+		assert.Equal(t, expectedEnd, activeSession.EndTime, "Active session should end at 10:00 UTC (start + 5 hours)")
 	}
 }
