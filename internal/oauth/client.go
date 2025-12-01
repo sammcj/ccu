@@ -119,7 +119,7 @@ func (c *Client) FetchUsage() (*UsageData, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		var errorBody map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&errorBody)
+		_ = json.NewDecoder(resp.Body).Decode(&errorBody)
 		return nil, fmt.Errorf("API returned status %d: %v", resp.StatusCode, errorBody)
 	}
 

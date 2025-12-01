@@ -146,56 +146,6 @@ func renderWeeklyUsageSingleColumn(weekly models.WeeklyUsage, barWidth int) []st
 	return lines
 }
 
-// renderSessionDistribution renders model distribution as a single line
-func renderSessionDistribution(session *models.SessionBlock) string {
-	if len(session.PerModelStats) == 0 {
-		return "📈 Session Distribution: [No model data available]"
-	}
-
-	totalTokens := session.DisplayTokens
-	if totalTokens == 0 {
-		return "📈 Session Distribution: [No tokens used]"
-	}
-
-	// Collect models with tokens and sort alphabetically
-	type modelData struct {
-		name    string
-		tokens  int
-		percent float64
-	}
-	var sortedModels []modelData
-
-	for model, stats := range session.PerModelStats {
-		modelTokens := stats.DisplayTokens()
-		if modelTokens > 0 {
-			percent := (float64(modelTokens) / float64(totalTokens)) * 100
-			sortedModels = append(sortedModels, modelData{
-				name:    model,
-				tokens:  modelTokens,
-				percent: percent,
-			})
-		}
-	}
-
-	// Sort alphabetically by model name
-	slices.SortFunc(sortedModels, func(a, b modelData) int {
-		if a.name < b.name {
-			return -1
-		} else if a.name > b.name {
-			return 1
-		}
-		return 0
-	})
-
-	// Build distribution string
-	var parts []string
-	for _, m := range sortedModels {
-		parts = append(parts, fmt.Sprintf("%s: %.1f%%", formatModelNameSimple(m.name), m.percent))
-	}
-
-	return fmt.Sprintf("📈 Session Distribution: [%s]", strings.Join(parts, ", "))
-}
-
 // getSessionDistributionString returns just the distribution part without the label
 func getSessionDistributionString(session *models.SessionBlock) string {
 	if session == nil {
@@ -608,7 +558,7 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 }
 
 // renderSessionMetricsFromOAuth renders session metrics from OAuth data (matching JSONL style)
-func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistribution string, barWidth int, now time.Time) []string {
+func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistribution string, barWidth int, _ time.Time) []string {
 	var lines []string
 
 	percent := oauthData.FiveHour.Utilisation
@@ -798,19 +748,4 @@ func calculateCostBurnRateFromSessions(blocks []models.SessionBlock, currentTime
 
 	// Divide by 60 to get cost per minute (matching token burn rate calculation)
 	return totalCost / 60.0
-}
-
-// formatDuration formats a duration into a human-readable string
-func formatDuration(d time.Duration) string {
-	if d < 0 {
-		return "expired"
-	}
-
-	hours := int(d.Hours())
-	minutes := int(d.Minutes()) % 60
-
-	if hours > 0 {
-		return fmt.Sprintf("%dh %dm", hours, minutes)
-	}
-	return fmt.Sprintf("%dm", minutes)
 }

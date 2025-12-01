@@ -9,7 +9,19 @@ import (
 	"github.com/sammcj/ccu/internal/config"
 )
 
+// Version information, set via ldflags during build
+var (
+	Version   = "dev"
+	Commit    = "unknown"
+	BuildDate = "unknown"
+)
+
 func main() {
+	// Set version info in config package for --version flag
+	config.Version = Version
+	config.Commit = Commit
+	config.BuildDate = BuildDate
+
 	// Parse configuration
 	cfg, err := config.ParseFlags()
 	if err != nil {

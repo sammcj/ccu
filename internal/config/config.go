@@ -10,6 +10,13 @@ import (
 	"github.com/sammcj/ccu/internal/models"
 )
 
+// Version information (set by main package)
+var (
+	Version   = "dev"
+	Commit    = "unknown"
+	BuildDate = "unknown"
+)
+
 // ParseFlags parses command-line flags and returns a config
 func ParseFlags() (*models.Config, error) {
 	config := models.DefaultConfig()
@@ -125,6 +132,7 @@ func printHelp() {
 
 // printVersion prints version information
 func printVersion() {
-	fmt.Println("ccu version 0.1.0")
-	fmt.Println("Claude Code Usage Monitor")
+	fmt.Printf("ccu version %s\n", Version)
+	fmt.Printf("Commit: %s\n", Commit)
+	fmt.Printf("Build Date: %s\n", BuildDate)
 }
