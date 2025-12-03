@@ -656,31 +656,29 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 		if costBurnRate > 0 && costRemaining > 0 {
 			costDepletion := analysis.PredictCostDepletion(costBurnRate, costRemaining, now)
 			if !costDepletion.IsZero() {
-				costDepletionStr = costDepletion.Local().Format("3:04 PM")
-
-				// Apply colour based on whether it's before/after reset
+				// Only show cost depletion if it's BEFORE the reset time
+				// If depletion is after reset, the session will reset first (you're safe)
 				if costDepletion.Before(resetTime) {
-					// Cost depletion is BEFORE reset time - we'll hit limit before resetting (ALWAYS BAD)
-					// Always red/danger because you WILL be cut off before reset
-					costStyle = lipgloss.NewStyle().Foreground(ColorDanger)
-				} else {
-					// Cost depletion is after reset time - check how close
-					timeAfterReset := costDepletion.Sub(resetTime)
-					if timeAfterReset <= 30*time.Minute {
-						// Orange if within 30 minutes after reset (close call - usage spike could cut you off)
+					costDepletionStr = costDepletion.Local().Format("3:04 PM")
+					// Cost depletion is BEFORE reset time - we'll hit limit before resetting (BAD)
+					// Colour based on how soon
+					timeUntilDepletion := costDepletion.Sub(now)
+					if timeUntilDepletion <= 10*time.Minute {
+						costStyle = lipgloss.NewStyle().Foreground(ColorDanger)
+					} else if timeUntilDepletion <= 30*time.Minute {
 						costStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
 					} else {
-						// Green otherwise - safe margin
-						costStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
+						costStyle = lipgloss.NewStyle().Foreground(ColorWarning)
 					}
-				}
 
-				// Show both predictions
-				return fmt.Sprintf("🔮 %s [%s] [%s]",
-					purpleStyle.Render("Prediction:"),
-					costStyle.Render(fmt.Sprintf("Cost limited at: %s", costDepletionStr)),
-					whiteStyle.Render(fmt.Sprintf("Resets at: %s", resetTimeStr)),
-				)
+					// Show cost depletion prediction
+					return fmt.Sprintf("🔮 %s [%s] [%s]",
+						purpleStyle.Render("Prediction:"),
+						costStyle.Render(fmt.Sprintf("Cost limited at: %s", costDepletionStr)),
+						whiteStyle.Render(fmt.Sprintf("Resets at: %s", resetTimeStr)),
+					)
+				}
+				// If depletion is after reset, fall through to show only reset time
 			}
 		}
 	}
