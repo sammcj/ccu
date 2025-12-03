@@ -413,11 +413,25 @@ func renderPrediction(session *models.SessionBlock, limits models.Limits, now ti
 	resetStr := resetTime.Format("3:04 PM")
 	whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
 	purpleStyle := lipgloss.NewStyle().Foreground(ColorPrediction)
+	pinkStyle := lipgloss.NewStyle().Foreground(ColorOpus) // Mellow pink
 
-	return fmt.Sprintf("🔮 %s [%s] [%s]",
+	// Check if under 1 hour left and over 50% usage remaining (under 50% used)
+	timeUntilReset := session.EndTime.Sub(now)
+	usagePercent := 0.0
+	if limits.CostLimitUSD > 0 {
+		usagePercent = (session.CostUSD / limits.CostLimitUSD) * 100
+	}
+
+	reminder := ""
+	if timeUntilReset > 0 && timeUntilReset < time.Hour && usagePercent < 50 {
+		reminder = " " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
+	}
+
+	return fmt.Sprintf("🔮 %s [%s] [%s]%s",
 		purpleStyle.Render("Prediction:"),
 		costStyle.Render(fmt.Sprintf("Cost limited at: %s", costDepletionStr)),
 		whiteStyle.Render(fmt.Sprintf("Resets at: %s", resetStr)),
+		reminder,
 	)
 }
 
@@ -682,20 +696,38 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 					}
 				}
 
+					// Check for unused utilisation warning
+				pinkStyle := lipgloss.NewStyle().Foreground(ColorOpus)
+				reminder := ""
+				timeUntilReset := resetTime.Sub(now)
+				if timeUntilReset > 0 && timeUntilReset < time.Hour && oauthData.FiveHour.Utilisation < 50 {
+					reminder = " " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
+				}
+
 				// Always show both predictions
-				return fmt.Sprintf("🔮 %s [%s] [%s]",
+				return fmt.Sprintf("🔮 %s [%s] [%s]%s",
 					purpleStyle.Render("Prediction:"),
 					costStyle.Render(fmt.Sprintf("Cost limited at: %s", costDepletionStr)),
 					whiteStyle.Render(fmt.Sprintf("Resets at: %s", resetTimeStr)),
+					reminder,
 				)
 			}
 		}
 	}
 
+	// Check for unused utilisation warning (fallback case)
+	pinkStyle := lipgloss.NewStyle().Foreground(ColorOpus)
+	reminder := ""
+	timeUntilReset := resetTime.Sub(now)
+	if timeUntilReset > 0 && timeUntilReset < time.Hour && oauthData.FiveHour.Utilisation < 50 {
+		reminder = " " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
+	}
+
 	// Fall back to just reset time if we can't calculate depletion
-	return fmt.Sprintf("🔮 %s [%s]",
+	return fmt.Sprintf("🔮 %s [%s]%s",
 		purpleStyle.Render("Prediction:"),
 		whiteStyle.Render(fmt.Sprintf("Resets at: %s", resetTimeStr)),
+		reminder,
 	)
 }
 
