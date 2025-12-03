@@ -558,7 +558,7 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 }
 
 // renderSessionMetricsFromOAuth renders session metrics from OAuth data (matching JSONL style)
-func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistribution string, barWidth int, _ time.Time) []string {
+func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistribution string, barWidth int, now time.Time) []string {
 	var lines []string
 
 	percent := oauthData.FiveHour.Utilisation
@@ -580,6 +580,13 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 
 	// Time before reset
 	resetTime, _ := oauth.ParseResetTime(oauthData.FiveHour.ResetsAt)
+
+	// If reset time is in the past or now, it represents the session start time
+	// The actual reset is start time + 5 hours
+	if !resetTime.After(now) {
+		resetTime = resetTime.Add(5 * time.Hour)
+	}
+
 	timeUntilReset := time.Until(resetTime)
 	totalSessionDuration := 5 * time.Hour
 	remaining := timeUntilReset.Hours()
@@ -622,6 +629,13 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 // renderPredictionWithOAuth renders prediction combining OAuth reset time with JSONL burn rate
 func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.SessionBlock, costBurnRate float64, limits models.Limits, now time.Time) string {
 	resetTime, _ := oauth.ParseResetTime(oauthData.FiveHour.ResetsAt)
+
+	// If reset time is in the past or now, it represents the session start time
+	// The actual reset is start time + 5 hours
+	if !resetTime.After(now) {
+		resetTime = resetTime.Add(5 * time.Hour)
+	}
+
 	resetTimeStr := resetTime.Local().Format("3:04 PM")
 	whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
 	purpleStyle := lipgloss.NewStyle().Foreground(ColorPrediction)
