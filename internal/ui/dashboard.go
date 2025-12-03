@@ -656,10 +656,10 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 		if costBurnRate > 0 && costRemaining > 0 {
 			costDepletion := analysis.PredictCostDepletion(costBurnRate, costRemaining, now)
 			if !costDepletion.IsZero() {
-				// Only show cost depletion if it's BEFORE the reset time
-				// If depletion is after reset, the session will reset first (you're safe)
+				costDepletionStr = costDepletion.Local().Format("3:04 PM")
+
+				// Colour based on whether depletion is before or after reset
 				if costDepletion.Before(resetTime) {
-					costDepletionStr = costDepletion.Local().Format("3:04 PM")
 					// Cost depletion is BEFORE reset time - we'll hit limit before resetting (BAD)
 					// Colour based on how soon
 					timeUntilDepletion := costDepletion.Sub(now)
@@ -670,15 +670,24 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 					} else {
 						costStyle = lipgloss.NewStyle().Foreground(ColorWarning)
 					}
-
-					// Show cost depletion prediction
-					return fmt.Sprintf("🔮 %s [%s] [%s]",
-						purpleStyle.Render("Prediction:"),
-						costStyle.Render(fmt.Sprintf("Cost limited at: %s", costDepletionStr)),
-						whiteStyle.Render(fmt.Sprintf("Resets at: %s", resetTimeStr)),
-					)
+				} else {
+					// Cost depletion is after reset time - you're safe (green)
+					timeAfterReset := costDepletion.Sub(resetTime)
+					if timeAfterReset <= 30*time.Minute {
+						// Orange if within 30 minutes after reset (close call)
+						costStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
+					} else {
+						// Green otherwise - safe margin
+						costStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
+					}
 				}
-				// If depletion is after reset, fall through to show only reset time
+
+				// Always show both predictions
+				return fmt.Sprintf("🔮 %s [%s] [%s]",
+					purpleStyle.Render("Prediction:"),
+					costStyle.Render(fmt.Sprintf("Cost limited at: %s", costDepletionStr)),
+					whiteStyle.Render(fmt.Sprintf("Resets at: %s", resetTimeStr)),
+				)
 			}
 		}
 	}
