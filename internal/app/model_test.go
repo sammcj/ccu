@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sammcj/ccu/internal/models"
+	"github.com/sammcj/ccu/internal/oauth"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -73,4 +74,56 @@ func TestNewModel_InitialState(t *testing.T) {
 	assert.True(t, model.loading, "Model should start in loading state")
 	assert.NotNil(t, model.spinner, "Spinner should be initialised")
 	assert.NotNil(t, model.limits, "Limits should be set from config")
+}
+
+func TestIsOAuthSessionStale(t *testing.T) {
+	tests := []struct {
+		name       string
+		resetAt    string // RFC3339 format
+		wantStale  bool
+	}{
+		{
+			name:      "nil model returns false",
+			resetAt:   "",
+			wantStale: false,
+		},
+		{
+			name:      "reset time 6 hours ago - stale (past the 5hr window)",
+			resetAt:   time.Now().Add(-6 * time.Hour).Format(time.RFC3339Nano),
+			wantStale: true,
+		},
+		{
+			name:      "reset time 4 hours ago - not stale (within 5hr window)",
+			resetAt:   time.Now().Add(-4 * time.Hour).Format(time.RFC3339Nano),
+			wantStale: false,
+		},
+		{
+			name:      "reset time 1 hour in future - not stale",
+			resetAt:   time.Now().Add(1 * time.Hour).Format(time.RFC3339Nano),
+			wantStale: false,
+		},
+		{
+			name:      "reset time exactly 5 hours ago - stale (boundary)",
+			resetAt:   time.Now().Add(-5 * time.Hour).Add(-1 * time.Second).Format(time.RFC3339Nano),
+			wantStale: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.resetAt == "" {
+				// Test nil model case
+				assert.False(t, isOAuthSessionStale(nil))
+				return
+			}
+
+			config := models.DefaultConfig()
+			model := NewModel(config)
+			model.oauthData = &oauth.UsageData{}
+			model.oauthData.FiveHour.ResetsAt = tt.resetAt
+
+			got := isOAuthSessionStale(model)
+			assert.Equal(t, tt.wantStale, got, "isOAuthSessionStale() mismatch")
+		})
+	}
 }

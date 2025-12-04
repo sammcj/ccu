@@ -153,8 +153,9 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 		// Only fetch OAuth data if:
 		// 1. OAuth is available
 		// 2. We haven't fetched in the last 60 seconds (or model is nil on first load)
+		// 3. OR the cached OAuth data has a stale session (reset time already passed)
 		shouldFetchOAuth := oauth.IsAvailable() &&
-			(model == nil || time.Since(model.lastOAuthFetch) > 60*time.Second)
+			(model == nil || time.Since(model.lastOAuthFetch) > 60*time.Second || isOAuthSessionStale(model))
 
 		if shouldFetchOAuth {
 			client, err := oauth.NewClient()
@@ -193,4 +194,23 @@ func tickCmd(interval time.Duration) tea.Cmd {
 	return tea.Tick(interval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+// isOAuthSessionStale checks if the cached OAuth data has a stale session
+// (i.e., the reset time + 5 hours has already passed)
+func isOAuthSessionStale(model *AppModel) bool {
+	if model == nil || model.oauthData == nil {
+		return false
+	}
+
+	resetTime, err := oauth.ParseResetTime(model.oauthData.FiveHour.ResetsAt)
+	if err != nil {
+		return true // Force refresh if we can't parse
+	}
+
+	// The API returns the session start time as ResetsAt
+	// The actual reset is start time + 5 hours
+	// If even that is in the past, the data is stale
+	actualResetTime := resetTime.Add(5 * time.Hour)
+	return !actualResetTime.After(time.Now())
 }
