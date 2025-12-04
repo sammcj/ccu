@@ -2,10 +2,20 @@ package oauth
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
+)
+
+// Common OAuth errors
+var (
+	// ErrTokenExpired indicates the OAuth token has expired and needs re-authentication
+	ErrTokenExpired = errors.New("OAuth token expired - run 'claude logout && claude login' to re-authenticate")
+	// ErrNetworkError indicates a transient network issue
+	ErrNetworkError = errors.New("network error")
 )
 
 // ClaudeAiOAuth represents the OAuth structure within keychain credentials
@@ -120,6 +130,18 @@ func (c *Client) FetchUsage() (*UsageData, error) {
 	if resp.StatusCode != http.StatusOK {
 		var errorBody map[string]interface{}
 		_ = json.NewDecoder(resp.Body).Decode(&errorBody)
+
+		// Check for token_expired error specifically
+		if resp.StatusCode == http.StatusUnauthorized {
+			if errMap, ok := errorBody["error"].(map[string]interface{}); ok {
+				if details, ok := errMap["details"].(map[string]interface{}); ok {
+					if code, ok := details["error_code"].(string); ok && code == "token_expired" {
+						return nil, ErrTokenExpired
+					}
+				}
+			}
+		}
+
 		return nil, fmt.Errorf("API returned status %d: %v", resp.StatusCode, errorBody)
 	}
 
@@ -140,4 +162,24 @@ func IsAvailable() bool {
 // ParseResetTime converts the API's reset time string to time.Time
 func ParseResetTime(resetAt string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, resetAt)
+}
+
+// IsTransientError returns true if the error is likely transient (network issues)
+// and the operation should be retried later
+func IsTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Token expired is not transient - requires user action
+	if errors.Is(err, ErrTokenExpired) {
+		return false
+	}
+	// Network errors are transient (case-insensitive check)
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "network") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "connection") ||
+		strings.Contains(errStr, "dial") ||
+		strings.Contains(errStr, "eof") ||
+		strings.Contains(errStr, "reset by peer")
 }

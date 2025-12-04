@@ -115,3 +115,68 @@ func TestFetchUsage(t *testing.T) {
 		t.Logf("7-day Opus: %.1f%%", usage.SevenDayOpus.Utilisation)
 	}
 }
+
+func TestIsTransientError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "token expired is not transient",
+			err:      ErrTokenExpired,
+			expected: false,
+		},
+		{
+			name:     "network error is transient",
+			err:      ErrNetworkError,
+			expected: true,
+		},
+		{
+			name:     "timeout error is transient",
+			err:      assert.AnError, // Using generic error with timeout in message below
+			expected: false,          // generic error without keyword is not transient
+		},
+		{
+			name:     "connection error is transient",
+			err:      &testError{msg: "dial tcp: connection refused"},
+			expected: true,
+		},
+		{
+			name:     "EOF error is transient",
+			err:      &testError{msg: "unexpected EOF"},
+			expected: true,
+		},
+		{
+			name:     "timeout in message is transient",
+			err:      &testError{msg: "context deadline exceeded (Client.Timeout exceeded)"},
+			expected: true,
+		},
+		{
+			name:     "unknown API error is not transient",
+			err:      &testError{msg: "API returned status 500"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsTransientError(tt.err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// testError is a simple error type for testing
+type testError struct {
+	msg string
+}
+
+func (e *testError) Error() string {
+	return e.msg
+}

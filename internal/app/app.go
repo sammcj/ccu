@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -27,9 +28,11 @@ func init() {
 // Messages
 type tickMsg time.Time
 type dataLoadedMsg struct {
-	entries   []models.UsageEntry
-	oauthData *oauth.UsageData
-	err       error
+	entries       []models.UsageEntry
+	oauthData     *oauth.UsageData
+	err           error
+	oauthErr      error // Separate OAuth error for proper handling
+	oauthDisabled bool  // Whether OAuth should be permanently disabled
 }
 type clearScreenMsg struct{}
 
@@ -75,6 +78,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.SetError(msg.err)
 			return m, nil
+		}
+
+		// Handle OAuth errors - disable OAuth if permanent failure
+		if msg.oauthErr != nil && msg.oauthDisabled {
+			if !m.HasLoggedOAuthError() {
+				log.Printf("OAuth disabled: %v (falling back to JSONL)", msg.oauthErr)
+				m.MarkOAuthErrorLogged()
+			}
+			m.DisableOAuth(msg.oauthErr.Error())
 		}
 
 		// Store OAuth data if available
@@ -149,12 +161,16 @@ func loadDataCmd(config *models.Config) tea.Cmd {
 func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 	return func() tea.Msg {
 		var oauthData *oauth.UsageData
+		var oauthErr error
+		var oauthShouldDisable bool
 
 		// Only fetch OAuth data if:
 		// 1. OAuth is available
-		// 2. We haven't fetched in the last 60 seconds (or model is nil on first load)
-		// 3. OR the cached OAuth data has a stale session (reset time already passed)
-		shouldFetchOAuth := oauth.IsAvailable() &&
+		// 2. OAuth hasn't been permanently disabled
+		// 3. We haven't fetched in the last 60 seconds (or model is nil on first load)
+		// 4. OR the cached OAuth data has a stale session (reset time already passed)
+		oauthNotDisabled := model == nil || !model.IsOAuthDisabled()
+		shouldFetchOAuth := oauth.IsAvailable() && oauthNotDisabled &&
 			(model == nil || time.Since(model.lastOAuthFetch) > 60*time.Second || isOAuthSessionStale(model))
 
 		if shouldFetchOAuth {
@@ -162,12 +178,22 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 			if err == nil {
 				oauthData, err = client.FetchUsage()
 				if err != nil {
-					// Log but don't fail - fall back to JSONL parsing
-					log.Printf("OAuth fetch failed (falling back to JSONL): %v", err)
+					oauthErr = err
 					oauthData = nil
+
+					// Determine if this is a permanent failure
+					if errors.Is(err, oauth.ErrTokenExpired) {
+						oauthShouldDisable = true
+					} else if !oauth.IsTransientError(err) {
+						// Other non-transient errors also disable OAuth
+						oauthShouldDisable = true
+					}
+					// For transient errors, we'll retry on the next tick
 				}
 			} else {
-				log.Printf("OAuth client creation failed: %v", err)
+				oauthErr = err
+				// Client creation failure is usually permanent (keychain issue)
+				oauthShouldDisable = true
 			}
 		} else if model != nil && model.oauthData != nil {
 			// Reuse cached OAuth data
@@ -182,9 +208,11 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 		entries, err := data.LoadUsageData(config.DataPath, hoursToLoad)
 
 		return dataLoadedMsg{
-			entries:   entries,
-			oauthData: oauthData,
-			err:       err,
+			entries:       entries,
+			oauthData:     oauthData,
+			err:           err,
+			oauthErr:      oauthErr,
+			oauthDisabled: oauthShouldDisable,
 		}
 	}
 }

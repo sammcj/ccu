@@ -22,13 +22,16 @@ type AppModel struct {
 	oauthData      *oauth.UsageData // OAuth-fetched usage data
 
 	// State
-	loading          bool
-	err              error
-	lastRefresh      time.Time
-	lastOAuthFetch   time.Time // Track when OAuth was last fetched
-	oauthEnabled     bool      // Whether OAuth is available
-	width            int
-	height           int
+	loading            bool
+	err                error
+	lastRefresh        time.Time
+	lastOAuthFetch     time.Time // Track when OAuth was last fetched
+	oauthEnabled       bool      // Whether OAuth is available
+	oauthDisabled      bool      // Whether OAuth has been disabled due to permanent error
+	oauthDisableReason string    // Reason OAuth was disabled (for UI display)
+	oauthErrorLogged   bool      // Whether we've already logged the OAuth error
+	width              int
+	height             int
 
 	// UI Components
 	spinner spinner.Model
@@ -169,4 +172,30 @@ func (m *AppModel) IsOAuthEnabled() bool {
 // HasOAuthData returns true if OAuth data has been fetched
 func (m *AppModel) HasOAuthData() bool {
 	return m.oauthData != nil
+}
+
+// DisableOAuth disables OAuth fetching due to a permanent error
+func (m *AppModel) DisableOAuth(reason string) {
+	m.oauthDisabled = true
+	m.oauthDisableReason = reason
+}
+
+// IsOAuthDisabled returns true if OAuth has been disabled due to an error
+func (m *AppModel) IsOAuthDisabled() bool {
+	return m.oauthDisabled
+}
+
+// GetOAuthDisableReason returns the reason OAuth was disabled
+func (m *AppModel) GetOAuthDisableReason() string {
+	return m.oauthDisableReason
+}
+
+// MarkOAuthErrorLogged marks that we've logged the OAuth error
+func (m *AppModel) MarkOAuthErrorLogged() {
+	m.oauthErrorLogged = true
+}
+
+// HasLoggedOAuthError returns true if we've already logged the OAuth error
+func (m *AppModel) HasLoggedOAuthError() bool {
+	return m.oauthErrorLogged
 }
