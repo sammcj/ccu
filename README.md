@@ -2,7 +2,7 @@
 
 A performant terminal dashboard for monitoring Claude Code usage, built in Go using the Charm family of packages (Bubbletea, Lipgloss, Bubbles).
 
-![screenshot](./screenshot.png)
+![screenshot](screenshot.png)
 
 ## Features
 
