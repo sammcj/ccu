@@ -225,7 +225,10 @@ func tickCmd(interval time.Duration) tea.Cmd {
 }
 
 // isOAuthSessionStale checks if the cached OAuth data has a stale session
-// (i.e., the reset time + 5 hours has already passed)
+// This triggers a refresh when:
+// 1. The session window has completely ended (reset time + 5 hours is in the past)
+// 2. The session just rolled over but utilisation is implausibly high (stale data)
+// 3. The remaining time has been at 0 for more than 5 minutes (stuck after sleep)
 func isOAuthSessionStale(model *AppModel) bool {
 	if model == nil || model.oauthData == nil {
 		return false
@@ -236,9 +239,50 @@ func isOAuthSessionStale(model *AppModel) bool {
 		return true // Force refresh if we can't parse
 	}
 
+	now := time.Now()
+
 	// The API returns the session start time as ResetsAt
 	// The actual reset is start time + 5 hours
-	// If even that is in the past, the data is stale
 	actualResetTime := resetTime.Add(5 * time.Hour)
-	return !actualResetTime.After(time.Now())
+
+	// If the session window has completely ended, data is stale
+	if !actualResetTime.After(now) {
+		return true
+	}
+
+	// Check if session just rolled over but utilisation is implausibly high
+	// This indicates the API returned stale utilisation data
+	sessionJustRolledOver := !resetTime.After(now)
+	if sessionJustRolledOver {
+		elapsed := now.Sub(resetTime)
+		// Maximum reasonable utilisation = (elapsed / 5 hours) * 100
+		maxReasonablePercent := (elapsed.Hours() / 5.0) * 100
+		if maxReasonablePercent < 1 {
+			maxReasonablePercent = 1
+		}
+
+		// If utilisation is much higher than possible, data is stale
+		if model.oauthData.FiveHour.Utilisation > maxReasonablePercent*2 {
+			return true
+		}
+	}
+
+	// Check if remaining time has been at 0 for more than 5 minutes
+	// This handles the case where the app wakes from sleep showing stale data
+	remaining := time.Until(actualResetTime)
+	if remaining <= 0 {
+		// Remaining is at 0 - track when this started
+		if model.zeroRemainingStart.IsZero() {
+			model.SetZeroRemainingStart(now)
+		} else if now.Sub(model.zeroRemainingStart) > 5*time.Minute {
+			// Been at 0 for over 5 minutes - force refresh
+			model.ClearZeroRemainingStart()
+			return true
+		}
+	} else {
+		// Remaining time is positive - clear the zero tracking
+		model.ClearZeroRemainingStart()
+	}
+
+	return false
 }

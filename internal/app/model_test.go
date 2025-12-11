@@ -78,9 +78,10 @@ func TestNewModel_InitialState(t *testing.T) {
 
 func TestIsOAuthSessionStale(t *testing.T) {
 	tests := []struct {
-		name       string
-		resetAt    string // RFC3339 format
-		wantStale  bool
+		name        string
+		resetAt     string // RFC3339 format
+		utilisation float64
+		wantStale   bool
 	}{
 		{
 			name:      "nil model returns false",
@@ -93,9 +94,10 @@ func TestIsOAuthSessionStale(t *testing.T) {
 			wantStale: true,
 		},
 		{
-			name:      "reset time 4 hours ago - not stale (within 5hr window)",
-			resetAt:   time.Now().Add(-4 * time.Hour).Format(time.RFC3339Nano),
-			wantStale: false,
+			name:        "reset time 4 hours ago with low utilisation - not stale",
+			resetAt:     time.Now().Add(-4 * time.Hour).Format(time.RFC3339Nano),
+			utilisation: 50.0,
+			wantStale:   false,
 		},
 		{
 			name:      "reset time 1 hour in future - not stale",
@@ -106,6 +108,37 @@ func TestIsOAuthSessionStale(t *testing.T) {
 			name:      "reset time exactly 5 hours ago - stale (boundary)",
 			resetAt:   time.Now().Add(-5 * time.Hour).Add(-1 * time.Second).Format(time.RFC3339Nano),
 			wantStale: true,
+		},
+		// New tests for session rollover with stale utilisation
+		{
+			name:        "session just rolled over 30min ago with 100% utilisation - stale",
+			resetAt:     time.Now().Add(-30 * time.Minute).Format(time.RFC3339Nano),
+			utilisation: 100.0,
+			wantStale:   true,
+		},
+		{
+			name:        "session rolled over 30min ago with 5% utilisation - not stale (plausible)",
+			resetAt:     time.Now().Add(-30 * time.Minute).Format(time.RFC3339Nano),
+			utilisation: 5.0,
+			wantStale:   false,
+		},
+		{
+			name:        "session rolled over 1hr ago with 50% utilisation - stale (too high)",
+			resetAt:     time.Now().Add(-1 * time.Hour).Format(time.RFC3339Nano),
+			utilisation: 50.0,
+			wantStale:   true,
+		},
+		{
+			name:        "session rolled over 1hr ago with 10% utilisation - not stale (plausible)",
+			resetAt:     time.Now().Add(-1 * time.Hour).Format(time.RFC3339Nano),
+			utilisation: 10.0,
+			wantStale:   false,
+		},
+		{
+			name:        "session 4 hours in with 80% utilisation - not stale",
+			resetAt:     time.Now().Add(-4 * time.Hour).Format(time.RFC3339Nano),
+			utilisation: 80.0,
+			wantStale:   false,
 		},
 	}
 
@@ -121,9 +154,72 @@ func TestIsOAuthSessionStale(t *testing.T) {
 			model := NewModel(config)
 			model.oauthData = &oauth.UsageData{}
 			model.oauthData.FiveHour.ResetsAt = tt.resetAt
+			model.oauthData.FiveHour.Utilisation = tt.utilisation
 
 			got := isOAuthSessionStale(model)
 			assert.Equal(t, tt.wantStale, got, "isOAuthSessionStale() mismatch")
 		})
 	}
+}
+
+func TestIsOAuthSessionStale_ZeroRemainingTimeout(t *testing.T) {
+	tests := []struct {
+		name               string
+		resetAt            time.Time // When session started (actual reset = resetAt + 5hr)
+		zeroRemainingStart time.Time // When we first detected 0 remaining
+		wantStale          bool
+	}{
+		{
+			name:               "remaining at 0 for first time - stale because session ended",
+			resetAt:            time.Now().Add(-6 * time.Hour), // Session ended 1hr ago
+			zeroRemainingStart: time.Time{},                   // Not set yet
+			wantStale:          true,                          // Will be stale because session ended
+		},
+		{
+			name:               "remaining at 0 for 3 minutes - stale (session window ended)",
+			resetAt:            time.Now().Add(-5*time.Hour - 3*time.Minute), // Reset 3min ago
+			zeroRemainingStart: time.Now().Add(-3 * time.Minute),
+			wantStale:          true, // Session window has ended - actualResetTime is in the past
+		},
+		{
+			name:               "session still active (1min left) - not stale",
+			resetAt:            time.Now().Add(-5*time.Hour + 1*time.Minute), // Reset in 1min
+			zeroRemainingStart: time.Time{},
+			wantStale:          false, // Session window still active
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := models.DefaultConfig()
+			model := NewModel(config)
+			model.oauthData = &oauth.UsageData{}
+			model.oauthData.FiveHour.ResetsAt = tt.resetAt.Format(time.RFC3339Nano)
+			model.oauthData.FiveHour.Utilisation = 50.0
+
+			if !tt.zeroRemainingStart.IsZero() {
+				model.SetZeroRemainingStart(tt.zeroRemainingStart)
+			}
+
+			got := isOAuthSessionStale(model)
+			assert.Equal(t, tt.wantStale, got, "isOAuthSessionStale() mismatch")
+		})
+	}
+}
+
+func TestZeroRemainingTracking(t *testing.T) {
+	config := models.DefaultConfig()
+	model := NewModel(config)
+
+	// Initially zero remaining start should be zero
+	assert.True(t, model.GetZeroRemainingStart().IsZero(), "Initial zero remaining start should be zero")
+
+	// Set zero remaining start
+	now := time.Now()
+	model.SetZeroRemainingStart(now)
+	assert.Equal(t, now, model.GetZeroRemainingStart(), "Should store zero remaining start time")
+
+	// Clear zero remaining start
+	model.ClearZeroRemainingStart()
+	assert.True(t, model.GetZeroRemainingStart().IsZero(), "Should clear zero remaining start")
 }

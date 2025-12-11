@@ -26,6 +26,7 @@ type AppModel struct {
 	err                error
 	lastRefresh        time.Time
 	lastOAuthFetch     time.Time // Track when OAuth was last fetched
+	zeroRemainingStart time.Time // Track when remaining time first hit 0
 	oauthEnabled       bool      // Whether OAuth is available
 	oauthDisabled      bool      // Whether OAuth has been disabled due to permanent error
 	oauthDisableReason string    // Reason OAuth was disabled (for UI display)
@@ -198,4 +199,19 @@ func (m *AppModel) MarkOAuthErrorLogged() {
 // HasLoggedOAuthError returns true if we've already logged the OAuth error
 func (m *AppModel) HasLoggedOAuthError() bool {
 	return m.oauthErrorLogged
+}
+
+// SetZeroRemainingStart marks when remaining time first hit 0
+func (m *AppModel) SetZeroRemainingStart(t time.Time) {
+	m.zeroRemainingStart = t
+}
+
+// GetZeroRemainingStart returns when remaining time first hit 0
+func (m *AppModel) GetZeroRemainingStart() time.Time {
+	return m.zeroRemainingStart
+}
+
+// ClearZeroRemainingStart clears the zero remaining tracking
+func (m *AppModel) ClearZeroRemainingStart() {
+	m.zeroRemainingStart = time.Time{}
 }

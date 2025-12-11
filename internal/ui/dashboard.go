@@ -75,7 +75,7 @@ func RenderDashboard(data DashboardData) string {
 
 	// Add warning if limits are approaching
 	if data.OAuthData != nil {
-		warning := renderOAuthLimitWarning(data.OAuthData)
+		warning := renderOAuthLimitWarning(data.OAuthData, now)
 		if warning != "" {
 			output = append(output, warning)
 		}
@@ -575,7 +575,40 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistribution string, barWidth int, now time.Time) []string {
 	var lines []string
 
+	resetTime, _ := oauth.ParseResetTime(oauthData.FiveHour.ResetsAt)
+
+	// Check if the session has recently rolled over (ResetsAt is in the past)
+	// When this happens, the Utilisation value may be stale (from the old session)
+	sessionJustRolledOver := !resetTime.After(now)
+	if sessionJustRolledOver {
+		resetTime = resetTime.Add(5 * time.Hour)
+	}
+
 	percent := oauthData.FiveHour.Utilisation
+
+	// If the session just rolled over and utilisation is suspiciously high for a new session,
+	// the data is likely stale. Calculate expected max utilisation based on elapsed time.
+	// A new session should have low utilisation proportional to time elapsed.
+	if sessionJustRolledOver {
+		// Calculate how long since the session started (time elapsed since ResetsAt - 5h)
+		sessionStart := resetTime.Add(-5 * time.Hour)
+		elapsed := now.Sub(sessionStart)
+
+		// Maximum reasonable utilisation = (elapsed / 5 hours) * 100
+		// e.g., 30 minutes into a 5-hour session = max 10% utilisation
+		maxReasonablePercent := (elapsed.Hours() / 5.0) * 100
+		if maxReasonablePercent < 1 {
+			maxReasonablePercent = 1 // Floor at 1%
+		}
+
+		// If reported utilisation is much higher than possible, it's stale data
+		if percent > maxReasonablePercent*2 {
+			// Clear distribution since it's also from the old session
+			sessionDistribution = ""
+			percent = 0 // Show 0% for new session until API updates
+		}
+	}
+
 	filled := int((percent / 100) * float64(barWidth-2))
 	if filled > barWidth-2 {
 		filled = barWidth - 2
@@ -591,15 +624,6 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 		usageStyle.Render(fmt.Sprintf("%.1f%%", percent)),
 		sessionDistribution)
 	lines = append(lines, line)
-
-	// Time before reset
-	resetTime, _ := oauth.ParseResetTime(oauthData.FiveHour.ResetsAt)
-
-	// If reset time is in the past or now, it represents the session start time
-	// The actual reset is start time + 5 hours
-	if !resetTime.After(now) {
-		resetTime = resetTime.Add(5 * time.Hour)
-	}
 
 	timeUntilReset := time.Until(resetTime)
 	totalSessionDuration := 5 * time.Hour
@@ -644,10 +668,24 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.SessionBlock, costBurnRate float64, limits models.Limits, now time.Time) string {
 	resetTime, _ := oauth.ParseResetTime(oauthData.FiveHour.ResetsAt)
 
-	// If reset time is in the past or now, it represents the session start time
-	// The actual reset is start time + 5 hours
-	if !resetTime.After(now) {
+	// Check if the session has recently rolled over (ResetsAt is in the past)
+	sessionJustRolledOver := !resetTime.After(now)
+	if sessionJustRolledOver {
 		resetTime = resetTime.Add(5 * time.Hour)
+	}
+
+	// Get utilisation, but check if it's stale after a session rollover
+	utilisationPercent := oauthData.FiveHour.Utilisation
+	if sessionJustRolledOver {
+		sessionStart := resetTime.Add(-5 * time.Hour)
+		elapsed := now.Sub(sessionStart)
+		maxReasonablePercent := (elapsed.Hours() / 5.0) * 100
+		if maxReasonablePercent < 1 {
+			maxReasonablePercent = 1
+		}
+		if utilisationPercent > maxReasonablePercent*2 {
+			utilisationPercent = 0 // Stale data, treat as new session
+		}
 	}
 
 	resetTimeStr := resetTime.Local().Format("3:04 PM")
@@ -661,7 +699,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	if session != nil && session.IsActive {
 		// Use OAuth percentage to calculate actual cost used (includes web + CLI)
 		// session.CostUSD only includes CLI activity, which can be misleading
-		costUsed := (oauthData.FiveHour.Utilisation / 100.0) * limits.CostLimitUSD
+		costUsed := (utilisationPercent / 100.0) * limits.CostLimitUSD
 		costRemaining := limits.CostLimitUSD - costUsed
 		if costRemaining < 0 {
 			costRemaining = 0
@@ -700,7 +738,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 				pinkStyle := lipgloss.NewStyle().Foreground(ColorOpus)
 				reminder := ""
 				timeUntilReset := resetTime.Sub(now)
-				if timeUntilReset > 0 && timeUntilReset < time.Hour && oauthData.FiveHour.Utilisation < 50 {
+				if timeUntilReset > 0 && timeUntilReset < time.Hour && utilisationPercent < 50 {
 					reminder = " " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
 				}
 
@@ -719,7 +757,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	pinkStyle := lipgloss.NewStyle().Foreground(ColorOpus)
 	reminder := ""
 	timeUntilReset := resetTime.Sub(now)
-	if timeUntilReset > 0 && timeUntilReset < time.Hour && oauthData.FiveHour.Utilisation < 50 {
+	if timeUntilReset > 0 && timeUntilReset < time.Hour && utilisationPercent < 50 {
 		reminder = " " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
 	}
 
@@ -732,8 +770,25 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 }
 
 // renderOAuthLimitWarning renders warning if OAuth limits are approaching
-func renderOAuthLimitWarning(oauthData *oauth.UsageData) string {
+func renderOAuthLimitWarning(oauthData *oauth.UsageData, now time.Time) string {
 	percent := oauthData.FiveHour.Utilisation
+
+	// Check if the session just rolled over - if so, high utilisation is likely stale
+	resetTime, _ := oauth.ParseResetTime(oauthData.FiveHour.ResetsAt)
+	if !resetTime.After(now) {
+		// Session rolled over - check if utilisation is plausible
+		sessionStart := resetTime
+		elapsed := now.Sub(sessionStart)
+		maxReasonablePercent := (elapsed.Hours() / 5.0) * 100
+		if maxReasonablePercent < 1 {
+			maxReasonablePercent = 1
+		}
+
+		// If utilisation is much higher than possible, it's stale - don't warn
+		if percent > maxReasonablePercent*2 {
+			return ""
+		}
+	}
 
 	if percent > 95 {
 		warningText := fmt.Sprintf("🚨 CRITICAL: Session usage at %.1f%%!", percent)

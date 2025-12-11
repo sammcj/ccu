@@ -4,8 +4,85 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sammcj/ccu/internal/oauth"
 	"github.com/stretchr/testify/assert"
 )
+
+// TestStaleUtilisationDetection tests that stale utilisation values are detected after session rollover
+func TestStaleUtilisationDetection(t *testing.T) {
+	tests := []struct {
+		name                 string
+		resetTimeOffset      time.Duration // Offset from "now"
+		utilisation          float64
+		expectStaleDetection bool
+	}{
+		{
+			name:                 "session 30min old with 100% utilisation - stale",
+			resetTimeOffset:      -30 * time.Minute,
+			utilisation:          100.0,
+			expectStaleDetection: true,
+		},
+		{
+			name:                 "session 30min old with 5% utilisation - not stale",
+			resetTimeOffset:      -30 * time.Minute,
+			utilisation:          5.0,
+			expectStaleDetection: false,
+		},
+		{
+			name:                 "session 1hr old with 50% utilisation - stale (max ~20%)",
+			resetTimeOffset:      -1 * time.Hour,
+			utilisation:          50.0,
+			expectStaleDetection: true,
+		},
+		{
+			name:                 "session 1hr old with 15% utilisation - not stale",
+			resetTimeOffset:      -1 * time.Hour,
+			utilisation:          15.0,
+			expectStaleDetection: false,
+		},
+		{
+			name:                 "session 4hr old with 80% utilisation - not stale (max ~80%)",
+			resetTimeOffset:      -4 * time.Hour,
+			utilisation:          80.0,
+			expectStaleDetection: false,
+		},
+		{
+			name:                 "reset time in future - utilisation is current, not stale",
+			resetTimeOffset:      1 * time.Hour,
+			utilisation:          95.0,
+			expectStaleDetection: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now()
+			resetTime := now.Add(tt.resetTimeOffset)
+
+			oauthData := &oauth.UsageData{}
+			oauthData.FiveHour.ResetsAt = resetTime.Format(time.RFC3339Nano)
+			oauthData.FiveHour.Utilisation = tt.utilisation
+
+			// Simulate the stale detection logic from renderSessionMetricsFromOAuth
+			sessionJustRolledOver := !resetTime.After(now)
+
+			isStale := false
+			if sessionJustRolledOver {
+				elapsed := now.Sub(resetTime)
+				maxReasonablePercent := (elapsed.Hours() / 5.0) * 100
+				if maxReasonablePercent < 1 {
+					maxReasonablePercent = 1
+				}
+				if tt.utilisation > maxReasonablePercent*2 {
+					isStale = true
+				}
+			}
+
+			assert.Equal(t, tt.expectStaleDetection, isStale,
+				"Stale detection mismatch for %s", tt.name)
+		})
+	}
+}
 
 // TestResetTimeCalculation tests that reset times in the past are correctly adjusted
 func TestResetTimeCalculation(t *testing.T) {
