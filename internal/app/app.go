@@ -229,17 +229,24 @@ func tickCmd(interval time.Duration) tea.Cmd {
 // 1. The session window has completely ended (reset time + 5 hours is in the past)
 // 2. The session just rolled over but utilisation is implausibly high (stale data)
 // 3. The remaining time has been at 0 for more than 5 minutes (stuck after sleep)
+// 4. More than 2 minutes since last data refresh (handles wake from sleep mid-session)
 func isOAuthSessionStale(model *AppModel) bool {
 	if model == nil || model.oauthData == nil {
 		return false
+	}
+
+	now := time.Now()
+
+	// Check if we've been asleep - if last refresh was > 2 minutes ago, force refresh
+	// This handles the case where the computer wakes from sleep mid-session
+	if !model.lastRefresh.IsZero() && now.Sub(model.lastRefresh) > 2*time.Minute {
+		return true
 	}
 
 	resetTime, err := oauth.ParseResetTime(model.oauthData.FiveHour.ResetsAt)
 	if err != nil {
 		return true // Force refresh if we can't parse
 	}
-
-	now := time.Now()
 
 	// The API returns the session start time as ResetsAt
 	// The actual reset is start time + 5 hours

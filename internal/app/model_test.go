@@ -207,6 +207,50 @@ func TestIsOAuthSessionStale_ZeroRemainingTimeout(t *testing.T) {
 	}
 }
 
+func TestIsOAuthSessionStale_WakeFromSleep(t *testing.T) {
+	tests := []struct {
+		name        string
+		lastRefresh time.Time
+		wantStale   bool
+	}{
+		{
+			name:        "last refresh 30 seconds ago - not stale",
+			lastRefresh: time.Now().Add(-30 * time.Second),
+			wantStale:   false,
+		},
+		{
+			name:        "last refresh 3 minutes ago - stale (wake from sleep)",
+			lastRefresh: time.Now().Add(-3 * time.Minute),
+			wantStale:   true,
+		},
+		{
+			name:        "last refresh 10 minutes ago - stale (wake from sleep)",
+			lastRefresh: time.Now().Add(-10 * time.Minute),
+			wantStale:   true,
+		},
+		{
+			name:        "no last refresh set - not stale (first load)",
+			lastRefresh: time.Time{},
+			wantStale:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := models.DefaultConfig()
+			model := NewModel(config)
+			model.oauthData = &oauth.UsageData{}
+			// Set a valid future reset time so other checks don't trigger
+			model.oauthData.FiveHour.ResetsAt = time.Now().Add(2 * time.Hour).Format(time.RFC3339Nano)
+			model.oauthData.FiveHour.Utilisation = 20.0
+			model.lastRefresh = tt.lastRefresh
+
+			got := isOAuthSessionStale(model)
+			assert.Equal(t, tt.wantStale, got, "isOAuthSessionStale() mismatch")
+		})
+	}
+}
+
 func TestZeroRemainingTracking(t *testing.T) {
 	config := models.DefaultConfig()
 	model := NewModel(config)
