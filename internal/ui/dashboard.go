@@ -65,10 +65,10 @@ func RenderDashboard(data DashboardData) string {
 
 	output = append(output, "") // Blank line before prediction
 
-	// Prediction
+	// Prediction (session + weekly combined on one line when OAuth available)
 	if data.OAuthData != nil {
-		// Show both cost depletion (from JSONL burn rate) and reset time (from OAuth)
-		output = append(output, renderPredictionWithOAuth(data.OAuthData, data.CurrentSession, costBurnRate, data.Limits, now))
+		// Show session cost depletion and weekly prediction on same line
+		output = append(output, renderPredictionWithOAuth(data.OAuthData, data.CurrentSession, costBurnRate, data.Limits, now, data.Config.ShowWeekly))
 	} else {
 		output = append(output, renderPrediction(data.CurrentSession, data.Limits, now))
 	}
@@ -695,7 +695,7 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 }
 
 // renderPredictionWithOAuth renders prediction combining OAuth reset time with JSONL burn rate
-func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.SessionBlock, costBurnRate float64, limits models.Limits, now time.Time) string {
+func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.SessionBlock, costBurnRate float64, limits models.Limits, now time.Time, showWeekly bool) string {
 	resetTime, _ := oauth.ParseResetTime(oauthData.FiveHour.ResetsAt)
 
 	// Check if the session has recently rolled over (ResetsAt is in the past)
@@ -721,9 +721,11 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	resetTimeStr := resetTime.Local().Format("3:04 PM")
 	whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
 	purpleStyle := lipgloss.NewStyle().Foreground(ColorPrediction)
+	pinkStyle := lipgloss.NewStyle().Foreground(ColorOpus)
 
 	var costDepletionStr string
 	var costStyle lipgloss.Style
+	hasCostPrediction := false
 
 	// Calculate cost depletion based on recent burn rate (passed in)
 	if session != nil && session.IsActive {
@@ -738,12 +740,12 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 		if costBurnRate > 0 && costRemaining > 0 {
 			costDepletion := analysis.PredictCostDepletion(costBurnRate, costRemaining, now)
 			if !costDepletion.IsZero() {
+				hasCostPrediction = true
 				costDepletionStr = costDepletion.Local().Format("3:04 PM")
 
 				// Colour based on whether depletion is before or after reset
 				if costDepletion.Before(resetTime) {
 					// Cost depletion is BEFORE reset time - we'll hit limit before resetting (BAD)
-					// Colour based on how soon
 					timeUntilDepletion := costDepletion.Sub(now)
 					if timeUntilDepletion <= 10*time.Minute {
 						costStyle = lipgloss.NewStyle().Foreground(ColorDanger)
@@ -756,45 +758,81 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 					// Cost depletion is after reset time - you're safe (green)
 					timeAfterReset := costDepletion.Sub(resetTime)
 					if timeAfterReset <= 30*time.Minute {
-						// Orange if within 30 minutes after reset (close call)
 						costStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
 					} else {
-						// Green otherwise - safe margin
 						costStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
 					}
 				}
-
-					// Check for unused utilisation warning
-				pinkStyle := lipgloss.NewStyle().Foreground(ColorOpus)
-				reminder := ""
-				timeUntilReset := resetTime.Sub(now)
-				if timeUntilReset > 0 && timeUntilReset < time.Hour && utilisationPercent < 50 {
-					reminder = " " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
-				}
-
-				// Always show both predictions
-				return fmt.Sprintf("🔮 %s [%s] [%s]%s",
-					purpleStyle.Render("Prediction:"),
-					costStyle.Render(fmt.Sprintf("Cost limited at: %s", costDepletionStr)),
-					whiteStyle.Render(fmt.Sprintf("Resets at: %s", resetTimeStr)),
-					reminder,
-				)
 			}
 		}
 	}
 
-	// Check for unused utilisation warning (fallback case)
-	pinkStyle := lipgloss.NewStyle().Foreground(ColorOpus)
+	// Build session prediction part
+	var sessionPart string
+	if hasCostPrediction {
+		sessionPart = fmt.Sprintf("[%s]",
+			costStyle.Render(fmt.Sprintf("Cost limited: %s (Resets: %s)", costDepletionStr, resetTimeStr)))
+	} else {
+		sessionPart = fmt.Sprintf("[%s]",
+			whiteStyle.Render(fmt.Sprintf("Resets: %s", resetTimeStr)))
+	}
+
+	// Build weekly prediction part
+	var weeklyPart string
+	if showWeekly {
+		weeklyPrediction := analysis.PredictWeeklyDepletion(oauthData, costBurnRate, limits.CostLimitUSD, now)
+		if !weeklyPrediction.ResetTime.IsZero() {
+			weeklyResetStr := fmt.Sprintf("%s %s",
+				weeklyPrediction.ResetTime.Local().Format("Mon"),
+				weeklyPrediction.ResetTime.Local().Format("3:04 PM"))
+
+			var weeklyStr string
+			var weeklyStyle lipgloss.Style
+
+			if weeklyPrediction.Utilisation >= 100 {
+				weeklyStr = fmt.Sprintf("Limit reached (Resets: %s)", weeklyResetStr)
+				weeklyStyle = lipgloss.NewStyle().Foreground(ColorDanger)
+			} else if weeklyPrediction.DepletionTime.IsZero() {
+				weeklyStr = fmt.Sprintf("Resets: %s", weeklyResetStr)
+				weeklyStyle = whiteStyle
+			} else if !weeklyPrediction.WillHitLimit {
+				weeklyStr = fmt.Sprintf("Safe (Resets: %s)", weeklyResetStr)
+				weeklyStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
+			} else {
+				// Will hit limit before reset - show when (never green since we'll be limited)
+				timeUntil := weeklyPrediction.DepletionTime.Sub(now)
+				weeklyDepletionStr := fmt.Sprintf("%s %s",
+					weeklyPrediction.DepletionTime.Local().Format("Mon"),
+					weeklyPrediction.DepletionTime.Local().Format("3:04 PM"))
+
+				switch {
+				case timeUntil <= 6*time.Hour:
+					weeklyStyle = lipgloss.NewStyle().Foreground(ColorDanger) // Red
+				case timeUntil <= 12*time.Hour:
+					weeklyStyle = lipgloss.NewStyle().Foreground(ColorPrimary) // Orange
+				default:
+					// More than 12h but will still hit limit before reset - yellow
+					weeklyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
+				}
+
+				weeklyStr = fmt.Sprintf("Weekly limited: %s (Resets: %s)", weeklyDepletionStr, weeklyResetStr)
+			}
+
+			weeklyPart = " | [" + weeklyStyle.Render(weeklyStr) + "]"
+		}
+	}
+
+	// Check for unused utilisation warning
 	reminder := ""
 	timeUntilReset := resetTime.Sub(now)
 	if timeUntilReset > 0 && timeUntilReset < time.Hour && utilisationPercent < 50 {
-		reminder = " " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
+		reminder = "   " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
 	}
 
-	// Fall back to just reset time if we can't calculate depletion
-	return fmt.Sprintf("🔮 %s [%s]%s",
+	return fmt.Sprintf("🔮 %s %s%s%s",
 		purpleStyle.Render("Prediction:"),
-		whiteStyle.Render(fmt.Sprintf("Resets at: %s", resetTimeStr)),
+		sessionPart,
+		weeklyPart,
 		reminder,
 	)
 }
