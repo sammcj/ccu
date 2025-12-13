@@ -491,6 +491,36 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 	// Get weekly limits based on plan
 	weeklyLimits := models.GetWeeklyLimits(strings.ToLower(limits.PlanName))
 
+	// Combined "All models" weekly limit (always present in API response)
+	{
+		allModelsPercent := oauthData.SevenDay.Utilisation
+		filled := int((allModelsPercent / 100) * float64(barWidth-2))
+		if filled > barWidth-2 {
+			filled = barWidth - 2
+		}
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled)
+
+		// Parse reset time
+		resetTime, err := oauth.ParseResetTime(oauthData.SevenDay.ResetsAt)
+		resetStr := ""
+		whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
+		if err == nil {
+			resetStr = " " + whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
+				resetTime.Local().Format("Mon"),
+				resetTime.Local().Format("3:04 PM")))
+		}
+
+		// Use green-to-red gradient for both bar and percentage
+		barStyle := GetPercentageStyle(allModelsPercent)
+		percentStyle := GetPercentageStyle(allModelsPercent)
+
+		line := fmt.Sprintf("🗓️  Weekly - All Models:  [%s] %s        %s",
+			barStyle.Render(bar),
+			percentStyle.Render(fmt.Sprintf("%.1f%%", allModelsPercent)),
+			resetStr)
+		lines = append(lines, line)
+	}
+
 	// Sonnet
 	if oauthData.SevenDaySonnet != nil {
 		sonnetPercent := oauthData.SevenDaySonnet.Utilisation
