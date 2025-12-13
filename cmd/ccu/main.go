@@ -37,6 +37,7 @@ func main() {
 		model,
 		tea.WithAltScreen(),       // Use alternate screen buffer
 		tea.WithMouseCellMotion(), // Enable mouse support
+		tea.WithReportFocus(),     // Detect terminal focus for refresh on wake
 	)
 
 	// Run the program

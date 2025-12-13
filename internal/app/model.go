@@ -26,11 +26,13 @@ type AppModel struct {
 	err                error
 	lastRefresh        time.Time
 	lastOAuthFetch     time.Time // Track when OAuth was last fetched
+	lastTickTime       time.Time // Track when last tick fired (for sleep detection)
 	zeroRemainingStart time.Time // Track when remaining time first hit 0
 	oauthEnabled       bool      // Whether OAuth is available
 	oauthDisabled      bool      // Whether OAuth has been disabled due to permanent error
 	oauthDisableReason string    // Reason OAuth was disabled (for UI display)
 	oauthErrorLogged   bool      // Whether we've already logged the OAuth error
+	forceRefresh       bool      // Force next refresh to bypass cache (after wake/focus)
 	width              int
 	height             int
 
@@ -214,4 +216,24 @@ func (m *AppModel) GetZeroRemainingStart() time.Time {
 // ClearZeroRemainingStart clears the zero remaining tracking
 func (m *AppModel) ClearZeroRemainingStart() {
 	m.zeroRemainingStart = time.Time{}
+}
+
+// SetLastTickTime records when the last tick fired
+func (m *AppModel) SetLastTickTime(t time.Time) {
+	m.lastTickTime = t
+}
+
+// GetLastTickTime returns when the last tick fired
+func (m *AppModel) GetLastTickTime() time.Time {
+	return m.lastTickTime
+}
+
+// SetForceRefresh sets whether the next refresh should bypass cache
+func (m *AppModel) SetForceRefresh(force bool) {
+	m.forceRefresh = force
+}
+
+// ShouldForceRefresh returns true if next refresh should bypass cache
+func (m *AppModel) ShouldForceRefresh() bool {
+	return m.forceRefresh
 }

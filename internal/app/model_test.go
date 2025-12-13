@@ -267,3 +267,93 @@ func TestZeroRemainingTracking(t *testing.T) {
 	model.ClearZeroRemainingStart()
 	assert.True(t, model.GetZeroRemainingStart().IsZero(), "Should clear zero remaining start")
 }
+
+func TestForceRefreshTracking(t *testing.T) {
+	config := models.DefaultConfig()
+	model := NewModel(config)
+
+	// Initially forceRefresh should be false
+	assert.False(t, model.ShouldForceRefresh(), "Initial forceRefresh should be false")
+
+	// Set forceRefresh
+	model.SetForceRefresh(true)
+	assert.True(t, model.ShouldForceRefresh(), "Should return true after setting forceRefresh")
+
+	// Clear forceRefresh
+	model.SetForceRefresh(false)
+	assert.False(t, model.ShouldForceRefresh(), "Should return false after clearing forceRefresh")
+}
+
+func TestLastTickTimeTracking(t *testing.T) {
+	config := models.DefaultConfig()
+	model := NewModel(config)
+
+	// Initially lastTickTime should be zero
+	assert.True(t, model.GetLastTickTime().IsZero(), "Initial lastTickTime should be zero")
+
+	// Set lastTickTime
+	now := time.Now()
+	model.SetLastTickTime(now)
+	assert.Equal(t, now, model.GetLastTickTime(), "Should store lastTickTime")
+}
+
+func TestTimeJumpDetection(t *testing.T) {
+	tests := []struct {
+		name           string
+		lastTickTime   time.Time
+		currentTime    time.Time
+		refreshRate    time.Duration
+		expectForce    bool
+		description    string
+	}{
+		{
+			name:         "normal tick interval - no force refresh",
+			lastTickTime: time.Now().Add(-60 * time.Second),
+			currentTime:  time.Now(),
+			refreshRate:  60 * time.Second,
+			expectForce:  false,
+			description:  "Tick arrived on time, no wake from sleep",
+		},
+		{
+			name:         "double interval - triggers force refresh",
+			lastTickTime: time.Now().Add(-3 * time.Minute),
+			currentTime:  time.Now(),
+			refreshRate:  60 * time.Second,
+			expectForce:  true,
+			description:  "More than 2x refresh rate elapsed - likely wake from sleep",
+		},
+		{
+			name:         "long sleep - triggers force refresh",
+			lastTickTime: time.Now().Add(-1 * time.Hour),
+			currentTime:  time.Now(),
+			refreshRate:  60 * time.Second,
+			expectForce:  true,
+			description:  "1 hour elapsed - definitely wake from sleep",
+		},
+		{
+			name:         "slightly delayed tick - no force refresh",
+			lastTickTime: time.Now().Add(-90 * time.Second),
+			currentTime:  time.Now(),
+			refreshRate:  60 * time.Second,
+			expectForce:  false,
+			description:  "1.5x refresh rate is within tolerance",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := models.DefaultConfig()
+			config.RefreshRate = tt.refreshRate
+			model := NewModel(config)
+			model.SetLastTickTime(tt.lastTickTime)
+
+			// Simulate the time jump detection logic from Update()
+			elapsed := tt.currentTime.Sub(tt.lastTickTime)
+			expectedMax := tt.refreshRate * 2
+			shouldForce := elapsed > expectedMax
+
+			assert.Equal(t, tt.expectForce, shouldForce,
+				"%s: elapsed=%v, expectedMax=%v", tt.description, elapsed, expectedMax)
+		})
+	}
+}

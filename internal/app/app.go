@@ -55,6 +55,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+	case tea.FocusMsg:
+		// Terminal regained focus - likely woke from sleep or switched back
+		// Force an immediate refresh bypassing OAuth cache
+		m.SetForceRefresh(true)
+		return m, loadDataCmdWithModel(m.config, &m)
+
 	case tea.WindowSizeMsg:
 		m.SetDimensions(msg.Width, msg.Height)
 		// Trigger a screen clear and redraw after resize to prevent stale content
@@ -68,6 +74,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		now := time.Time(msg)
+		// Detect wall clock jump (system wake from sleep)
+		// If more time has passed than expected (2x refresh rate), force a fresh fetch
+		if !m.lastTickTime.IsZero() {
+			elapsed := now.Sub(m.lastTickTime)
+			expectedMax := m.config.RefreshRate * 2
+			if elapsed > expectedMax {
+				// Significant time jump detected - likely woke from sleep
+				m.SetForceRefresh(true)
+			}
+		}
+		m.SetLastTickTime(now)
+
 		// Refresh data periodically (with OAuth caching)
 		return m, tea.Batch(
 			loadDataCmdWithModel(m.config, &m),
@@ -159,6 +178,12 @@ func loadDataCmd(config *models.Config) tea.Cmd {
 
 // loadDataCmdWithModel loads data with optional model context for OAuth caching
 func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
+	// Capture forceRefresh state before async execution
+	forceRefresh := model != nil && model.ShouldForceRefresh()
+	if forceRefresh && model != nil {
+		model.SetForceRefresh(false) // Clear the flag immediately
+	}
+
 	return func() tea.Msg {
 		var oauthData *oauth.UsageData
 		var oauthErr error
@@ -169,9 +194,10 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 		// 2. OAuth hasn't been permanently disabled
 		// 3. We haven't fetched in the last 60 seconds (or model is nil on first load)
 		// 4. OR the cached OAuth data has a stale session (reset time already passed)
+		// 5. OR forceRefresh is set (wake from sleep, terminal focus regained)
 		oauthNotDisabled := model == nil || !model.IsOAuthDisabled()
 		shouldFetchOAuth := oauth.IsAvailable() && oauthNotDisabled &&
-			(model == nil || time.Since(model.lastOAuthFetch) > 60*time.Second || isOAuthSessionStale(model))
+			(model == nil || forceRefresh || time.Since(model.lastOAuthFetch) > 60*time.Second || isOAuthSessionStale(model))
 
 		if shouldFetchOAuth {
 			client, err := oauth.NewClient()

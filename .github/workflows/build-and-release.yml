@@ -46,7 +46,7 @@ jobs:
           tag_prefix: v
           create_annotated_tag: true
           fetch_all_tags: true
-          skip_on_missing_release_branches: true
+          # skip_on_missing_release_branches: true
 
   build-linux-amd64:
     name: Build Linux AMD64
@@ -275,7 +275,7 @@ jobs:
 
   build-darwin-amd64:
     name: Build macOS AMD64
-    runs-on: macos-13
+    runs-on: macos-latest
     needs: [bump-version]
     if: always() && (needs.bump-version.result == 'success' || needs.bump-version.result == 'skipped') && github.event_name != 'pull_request' && !contains(github.event.head_commit.message, '[skip-ci]')
     steps:
