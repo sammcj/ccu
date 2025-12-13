@@ -47,8 +47,20 @@ func RenderDashboard(data DashboardData) string {
 	burnRate := analysis.CalculateBurnRate(data.AllSessions, now)
 	costBurnRate := calculateCostBurnRateFromSessions(data.AllSessions, now)
 
+	// Get session reset time for burn rate display
+	var sessionResetTime time.Time
+	if data.OAuthData != nil {
+		sessionResetTime, _ = oauth.ParseResetTime(data.OAuthData.FiveHour.ResetsAt)
+		// Adjust if session rolled over
+		if !sessionResetTime.After(now) {
+			sessionResetTime = sessionResetTime.Add(5 * time.Hour)
+		}
+	} else if data.CurrentSession != nil {
+		sessionResetTime = data.CurrentSession.EndTime
+	}
+
 	// Show burn rates on one line
-	output = append(output, renderBurnRates(burnRate, costBurnRate, data.Limits, barWidth))
+	output = append(output, renderBurnRates(burnRate, costBurnRate, data.Limits, barWidth, sessionResetTime))
 
 	// Get session distribution for appending to session usage line
 	sessionDistribution := getSessionDistributionString(data.CurrentSession)
@@ -206,7 +218,7 @@ func getSessionDistributionString(session *models.SessionBlock) string {
 }
 
 // renderBurnRates renders token and cost burn rates on one line
-func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, barWidth int) string {
+func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, barWidth int, sessionResetTime time.Time) string {
 	// Calculate what percentage of limit the burn rate represents
 	// For a reasonable scale, let's assume max comfortable burn rate is hitting limit in 2 hours
 	// So: maxBurnRate = limit / 120 minutes
@@ -271,12 +283,20 @@ func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, 
 	tokenValueStyle := GetPercentageStyle(tokenPercent)
 	costValueStyle := GetPercentageStyle(costPercent)
 
+	// Session reset time
+	resetStr := ""
+	if !sessionResetTime.IsZero() {
+		whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
+		resetStr = "      " + whiteStyle.Render(fmt.Sprintf("[Resets: %s]", sessionResetTime.Local().Format("3:04 PM")))
+	}
+
 	// Format: first bar aligned with other bars, second bar starts where second column (like "Remaining") starts
-	return fmt.Sprintf("🔥 Burn Rate - Tokens:   [%s] %s\n💸 Burn Rate - Cost:     [%s] %s",
+	return fmt.Sprintf("🔥 Burn Rate - Tokens:   [%s] %s\n💸 Burn Rate - Cost:     [%s] %s%s",
 		tokenStyle.Render(tokenBar),
 		tokenValueStyle.Render(fmt.Sprintf("%.0f/min", tokenBurnRate)),
 		costStyle.Render(costBar),
 		costValueStyle.Render(fmt.Sprintf("$%.2f/hr", costPerHour)),
+		resetStr,
 	)
 }
 
@@ -423,7 +443,7 @@ func renderPrediction(session *models.SessionBlock, limits models.Limits, now ti
 	}
 
 	reminder := ""
-	if timeUntilReset > 0 && timeUntilReset < time.Hour && usagePercent < 50 {
+	if timeUntilReset > 0 && timeUntilReset < time.Hour && usagePercent < 75 {
 		reminder = " " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
 	}
 
@@ -539,7 +559,7 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 		resetStr := ""
 		whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
 		if err == nil {
-			resetStr = " " + whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
+			resetStr = whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
 				resetTime.Local().Format("Mon"),
 				resetTime.Local().Format("3:04 PM")))
 		}
@@ -548,14 +568,14 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 		barStyle := GetPercentageStyle(sonnetPercent)
 		percentStyle := GetPercentageStyle(sonnetPercent)
 
-		// Colourise the hours value (but not the slash or "hrs")
-		hoursValue := GetPercentageStyle(sonnetPercent).Render(fmt.Sprintf("%.1f / %.1f hrs", usedHours, limitHours))
+		// Hours value in parentheses
+		hoursValue := GetPercentageStyle(sonnetPercent).Render(fmt.Sprintf("(%.1f / %.1f hrs)", usedHours, limitHours))
 
-		line := fmt.Sprintf("🗓️  Weekly - Sonnet:      [%s] %s          %s%s",
+		line := fmt.Sprintf("🗓️  Weekly - Sonnet:      [%s] %s          %s %s",
 			barStyle.Render(bar),
 			percentStyle.Render(fmt.Sprintf("%.1f%%", sonnetPercent)),
-			hoursValue,
-			resetStr)
+			resetStr,
+			hoursValue)
 		lines = append(lines, line)
 	}
 
@@ -577,7 +597,7 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 		if oauthData.SevenDayOpus.ResetsAt != nil {
 			resetTime, err := oauth.ParseResetTime(*oauthData.SevenDayOpus.ResetsAt)
 			if err == nil {
-				resetStr = " " + whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
+				resetStr = whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
 					resetTime.Local().Format("Mon"),
 					resetTime.Local().Format("3:04 PM")))
 			}
@@ -587,14 +607,14 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 		barStyle := GetPercentageStyle(opusPercent)
 		percentStyle := GetPercentageStyle(opusPercent)
 
-		// Colourise the hours value (but not the slash or "hrs")
-		hoursValue := GetPercentageStyle(opusPercent).Render(fmt.Sprintf("%.1f / %.1f hrs", usedHours, limitHours))
+		// Hours value in parentheses
+		hoursValue := GetPercentageStyle(opusPercent).Render(fmt.Sprintf("(%.1f / %.1f hrs)", usedHours, limitHours))
 
-		line := fmt.Sprintf("🗓️  Weekly - Opus:        [%s] %s          %s%s",
+		line := fmt.Sprintf("🗓️  Weekly - Opus:        [%s] %s          %s %s",
 			barStyle.Render(bar),
 			percentStyle.Render(fmt.Sprintf("%.1f%%", opusPercent)),
-			hoursValue,
-			resetStr)
+			resetStr,
+			hoursValue)
 		lines = append(lines, line)
 	}
 
@@ -771,7 +791,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	var sessionPart string
 	if hasCostPrediction {
 		sessionPart = fmt.Sprintf("[%s]",
-			costStyle.Render(fmt.Sprintf("Cost limited: %s (Resets: %s)", costDepletionStr, resetTimeStr)))
+			costStyle.Render(fmt.Sprintf("Cost limited: %s", costDepletionStr)))
 	} else {
 		sessionPart = fmt.Sprintf("[%s]",
 			whiteStyle.Render(fmt.Sprintf("Resets: %s", resetTimeStr)))
@@ -782,21 +802,17 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	if showWeekly {
 		weeklyPrediction := analysis.PredictWeeklyDepletion(oauthData, costBurnRate, limits.CostLimitUSD, now)
 		if !weeklyPrediction.ResetTime.IsZero() {
-			weeklyResetStr := fmt.Sprintf("%s %s",
-				weeklyPrediction.ResetTime.Local().Format("Mon"),
-				weeklyPrediction.ResetTime.Local().Format("3:04 PM"))
-
 			var weeklyStr string
 			var weeklyStyle lipgloss.Style
 
 			if weeklyPrediction.Utilisation >= 100 {
-				weeklyStr = fmt.Sprintf("Limit reached (Resets: %s)", weeklyResetStr)
+				weeklyStr = "Weekly limit reached"
 				weeklyStyle = lipgloss.NewStyle().Foreground(ColorDanger)
 			} else if weeklyPrediction.DepletionTime.IsZero() {
-				weeklyStr = fmt.Sprintf("Resets: %s", weeklyResetStr)
+				weeklyStr = "Weekly: insufficient data"
 				weeklyStyle = whiteStyle
 			} else if !weeklyPrediction.WillHitLimit {
-				weeklyStr = fmt.Sprintf("Safe (Resets: %s)", weeklyResetStr)
+				weeklyStr = "Weekly: safe"
 				weeklyStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
 			} else {
 				// Will hit limit before reset - show when (never green since we'll be limited)
@@ -815,7 +831,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 					weeklyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
 				}
 
-				weeklyStr = fmt.Sprintf("Weekly limited: %s (Resets: %s)", weeklyDepletionStr, weeklyResetStr)
+				weeklyStr = fmt.Sprintf("Weekly limited: %s", weeklyDepletionStr)
 			}
 
 			weeklyPart = " | [" + weeklyStyle.Render(weeklyStr) + "]"
@@ -825,8 +841,8 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	// Check for unused utilisation warning
 	reminder := ""
 	timeUntilReset := resetTime.Sub(now)
-	if timeUntilReset > 0 && timeUntilReset < time.Hour && utilisationPercent < 50 {
-		reminder = "   " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
+	if timeUntilReset > 0 && timeUntilReset < time.Hour && utilisationPercent < 75 {
+		reminder = " | " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
 	}
 
 	return fmt.Sprintf("🔮 %s %s%s%s",
