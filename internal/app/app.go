@@ -28,11 +28,12 @@ func init() {
 // Messages
 type tickMsg time.Time
 type dataLoadedMsg struct {
-	entries       []models.UsageEntry
-	oauthData     *oauth.UsageData
-	err           error
-	oauthErr      error // Separate OAuth error for proper handling
-	oauthDisabled bool  // Whether OAuth should be permanently disabled
+	entries        []models.UsageEntry
+	oauthData      *oauth.UsageData
+	err            error
+	oauthErr       error // Separate OAuth error for proper handling
+	oauthDisabled  bool  // Whether OAuth should be permanently disabled
+	oauthFreshData bool  // Whether OAuth data was freshly fetched (not from cache)
 }
 type clearScreenMsg struct{}
 
@@ -111,10 +112,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Store OAuth data if available
 		if msg.oauthData != nil {
 			m.SetOAuthData(msg.oauthData)
-			now := time.Now()
-			m.lastOAuthFetch = now
-			// Update weekly fetch timestamp - ensures weekly data tracked for 5-minute refresh cycle
-			m.SetLastWeeklyFetch(now)
+			// Only update timestamps when we fetched fresh data (not from cache)
+			// This ensures the 15-minute weekly refresh check works correctly
+			if msg.oauthFreshData {
+				now := time.Now()
+				m.lastOAuthFetch = now
+				m.SetLastWeeklyFetch(now)
+			}
 		}
 
 		// Process entries into sessions
@@ -191,6 +195,7 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 		var oauthData *oauth.UsageData
 		var oauthErr error
 		var oauthShouldDisable bool
+		var oauthFreshData bool // Track if we fetched fresh data vs using cache
 
 		// Only fetch OAuth data if:
 		// 1. OAuth is available
@@ -198,10 +203,10 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 		// 3. We haven't fetched in the last 60 seconds (or model is nil on first load)
 		// 4. OR the cached OAuth data has a stale session (reset time already passed)
 		// 5. OR forceRefresh is set (wake from sleep, terminal focus regained)
-		// 6. OR weekly data hasn't been refreshed in 5 minutes (safety net for guaranteed weekly updates)
+		// 6. OR weekly data hasn't been refreshed in 15 minutes (safety net for guaranteed weekly updates)
 		oauthNotDisabled := model == nil || !model.IsOAuthDisabled()
-		// Weekly refresh safety net: ensure OAuth is fetched at least every 5 minutes for weekly data
-		weeklyRefreshNeeded := model != nil && !model.GetLastWeeklyFetch().IsZero() && time.Since(model.GetLastWeeklyFetch()) >= 5*time.Minute
+		// Weekly refresh safety net: ensure OAuth is fetched at least every 15 minutes for weekly data
+		weeklyRefreshNeeded := model != nil && !model.GetLastWeeklyFetch().IsZero() && time.Since(model.GetLastWeeklyFetch()) >= 15*time.Minute
 		shouldFetchOAuth := oauth.IsAvailable() && oauthNotDisabled &&
 			(model == nil || forceRefresh || time.Since(model.lastOAuthFetch) >= 60*time.Second || isOAuthSessionStale(model) || weeklyRefreshNeeded)
 
@@ -221,6 +226,9 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 						oauthShouldDisable = true
 					}
 					// For transient errors, we'll retry on the next tick
+				} else {
+					// Successfully fetched fresh OAuth data
+					oauthFreshData = true
 				}
 			} else {
 				oauthErr = err
@@ -228,7 +236,7 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 				oauthShouldDisable = true
 			}
 		} else if model != nil && model.oauthData != nil {
-			// Reuse cached OAuth data
+			// Reuse cached OAuth data (oauthFreshData remains false)
 			oauthData = model.oauthData
 		}
 
@@ -240,11 +248,12 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 		entries, err := data.LoadUsageData(config.DataPath, hoursToLoad)
 
 		return dataLoadedMsg{
-			entries:       entries,
-			oauthData:     oauthData,
-			err:           err,
-			oauthErr:      oauthErr,
-			oauthDisabled: oauthShouldDisable,
+			entries:        entries,
+			oauthData:      oauthData,
+			err:            err,
+			oauthErr:       oauthErr,
+			oauthDisabled:  oauthShouldDisable,
+			oauthFreshData: oauthFreshData,
 		}
 	}
 }
