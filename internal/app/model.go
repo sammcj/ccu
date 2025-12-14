@@ -26,6 +26,7 @@ type AppModel struct {
 	err                error
 	lastRefresh        time.Time
 	lastOAuthFetch     time.Time // Track when OAuth was last fetched
+	lastWeeklyFetch    time.Time // Track when weekly data was last refreshed from OAuth
 	lastTickTime       time.Time // Track when last tick fired (for sleep detection)
 	zeroRemainingStart time.Time // Track when remaining time first hit 0
 	oauthEnabled       bool      // Whether OAuth is available
@@ -226,6 +227,16 @@ func (m *AppModel) SetLastTickTime(t time.Time) {
 // GetLastTickTime returns when the last tick fired
 func (m *AppModel) GetLastTickTime() time.Time {
 	return m.lastTickTime
+}
+
+// SetLastWeeklyFetch records when weekly data was last fetched
+func (m *AppModel) SetLastWeeklyFetch(t time.Time) {
+	m.lastWeeklyFetch = t
+}
+
+// GetLastWeeklyFetch returns when weekly data was last fetched
+func (m *AppModel) GetLastWeeklyFetch() time.Time {
+	return m.lastWeeklyFetch
 }
 
 // SetForceRefresh sets whether the next refresh should bypass cache

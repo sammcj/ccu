@@ -111,7 +111,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Store OAuth data if available
 		if msg.oauthData != nil {
 			m.SetOAuthData(msg.oauthData)
-			m.lastOAuthFetch = time.Now()
+			now := time.Now()
+			m.lastOAuthFetch = now
+			// Update weekly fetch timestamp - ensures weekly data tracked for 5-minute refresh cycle
+			m.SetLastWeeklyFetch(now)
 		}
 
 		// Process entries into sessions
@@ -195,9 +198,12 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 		// 3. We haven't fetched in the last 60 seconds (or model is nil on first load)
 		// 4. OR the cached OAuth data has a stale session (reset time already passed)
 		// 5. OR forceRefresh is set (wake from sleep, terminal focus regained)
+		// 6. OR weekly data hasn't been refreshed in 5 minutes (safety net for guaranteed weekly updates)
 		oauthNotDisabled := model == nil || !model.IsOAuthDisabled()
+		// Weekly refresh safety net: ensure OAuth is fetched at least every 5 minutes for weekly data
+		weeklyRefreshNeeded := model != nil && !model.GetLastWeeklyFetch().IsZero() && time.Since(model.GetLastWeeklyFetch()) >= 5*time.Minute
 		shouldFetchOAuth := oauth.IsAvailable() && oauthNotDisabled &&
-			(model == nil || forceRefresh || time.Since(model.lastOAuthFetch) > 60*time.Second || isOAuthSessionStale(model))
+			(model == nil || forceRefresh || time.Since(model.lastOAuthFetch) >= 60*time.Second || isOAuthSessionStale(model) || weeklyRefreshNeeded)
 
 		if shouldFetchOAuth {
 			client, err := oauth.NewClient()
