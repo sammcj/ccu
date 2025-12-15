@@ -25,8 +25,10 @@ const (
 // Uses ANSI escape sequences to position cursor at fixed columns,
 // ensuring alignment regardless of how the terminal renders emoji widths.
 func formatRow(emoji, label, bar, value, suffix string) string {
+	// \x1b[2K clears the entire line first (prevents ghost characters from previous frames)
 	// \x1b[nG moves cursor to column n (1-based)
 	var b strings.Builder
+	b.WriteString("\x1b[2K") // Clear entire line first
 	b.WriteString(emoji)
 	b.WriteString(fmt.Sprintf("\x1b[%dG%s", colPosLabel, label))
 	b.WriteString(fmt.Sprintf("\x1b[%dG%s", colPosBar, bar))
@@ -186,22 +188,23 @@ func renderWeeklyUsageSingleColumn(weekly models.WeeklyUsage, barWidth int) []st
 }
 
 // getSessionDistributionString returns just the distribution part without the label
+// Uses cost-based distribution as this is more meaningful than token counts
+// (e.g., Haiku is cheap so high token counts don't reflect actual usage impact)
 func getSessionDistributionString(session *models.SessionBlock) string {
 	if session == nil {
 		return ""
 	}
 
-	// Calculate token distribution by model
-	modelTokens := make(map[string]int)
-	totalTokens := 0
+	// Calculate cost distribution by model
+	modelCosts := make(map[string]float64)
+	totalCost := 0.0
 
 	for _, entry := range session.Entries {
-		tokens := entry.InputTokens + entry.OutputTokens
-		modelTokens[entry.Model] += tokens
-		totalTokens += tokens
+		modelCosts[entry.Model] += entry.CostUSD
+		totalCost += entry.CostUSD
 	}
 
-	if totalTokens == 0 {
+	if totalCost == 0 {
 		return ""
 	}
 
@@ -212,9 +215,9 @@ func getSessionDistributionString(session *models.SessionBlock) string {
 	}
 
 	var sortedModels []modelData
-	for model, tokens := range modelTokens {
-		if tokens > 0 {
-			percent := (float64(tokens) / float64(totalTokens)) * 100
+	for model, cost := range modelCosts {
+		if cost > 0 {
+			percent := (cost / totalCost) * 100
 			sortedModels = append(sortedModels, modelData{
 				name:    model,
 				percent: percent,
@@ -222,11 +225,11 @@ func getSessionDistributionString(session *models.SessionBlock) string {
 		}
 	}
 
-	// Sort alphabetically by model name
+	// Sort by percentage descending (highest usage first)
 	slices.SortFunc(sortedModels, func(a, b modelData) int {
-		if a.name < b.name {
+		if a.percent > b.percent {
 			return -1
-		} else if a.name > b.name {
+		} else if a.percent < b.percent {
 			return 1
 		}
 		return 0
@@ -486,13 +489,13 @@ func renderPrediction(session *models.SessionBlock, limits models.Limits, now ti
 
 	reminder := ""
 	if timeUntilReset > 0 && timeUntilReset < time.Hour && usagePercent < 75 {
-		reminder = " " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
+		reminder = " " + pinkStyle.Render("✈️ Unused session utilisation expiring soon")
 	}
 
 	return fmt.Sprintf("🔮 %s [%s] [%s]%s",
 		purpleStyle.Render("Prediction:"),
 		costStyle.Render(fmt.Sprintf("Cost limited at: %s", costDepletionStr)),
-		whiteStyle.Render(fmt.Sprintf("Resets at: %s", resetStr)),
+		whiteStyle.Render(fmt.Sprintf("Resets: %s", resetStr)),
 		reminder,
 	)
 }
@@ -559,7 +562,7 @@ func renderSessionLimitWarning(session *models.SessionBlock, limits models.Limit
 		return CriticalStyle.Render(warningText)
 	} else if percent > 85 {
 		// Warning (>85%)
-		warningText := fmt.Sprintf("⚠️  WARNING: Session %s limit at %.1f%%", limitType, percent)
+		warningText := fmt.Sprintf("⚠️ WARNING: Session %s limit at %.1f%%", limitType, percent)
 		return WarningStyle.Render(warningText)
 	}
 
@@ -760,7 +763,7 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 		"Time Before Reset:",
 		timeStyle.Render(timeBar),
 		timeStyle.Render(fmt.Sprintf("%.1f%%", remainingPercent)),
-		timeStyle.Render(fmt.Sprintf("⏱️  Remaining: %.1f / %.1f hours", remaining, totalSessionDuration.Hours())),
+		timeStyle.Render(fmt.Sprintf("⏱️ Remaining: %.1f / %.1f hours", remaining, totalSessionDuration.Hours())),
 	)
 	lines = append(lines, timeLine)
 
@@ -859,13 +862,13 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 			var weeklyStyle lipgloss.Style
 
 			if weeklyPrediction.Utilisation >= 100 {
-				weeklyStr = "Weekly limit reached"
+				weeklyStr = "Weekly limit exceeded!"
 				weeklyStyle = lipgloss.NewStyle().Foreground(ColorDanger)
 			} else if weeklyPrediction.DepletionTime.IsZero() {
-				weeklyStr = "Weekly: insufficient data"
+				weeklyStr = "Weekly: Insufficient data"
 				weeklyStyle = whiteStyle
 			} else if !weeklyPrediction.WillHitLimit {
-				weeklyStr = "Weekly: safe"
+				weeklyStr = "Weekly: OK"
 				weeklyStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
 			} else {
 				// Will hit limit before reset - show when (never green since we'll be limited)
@@ -895,7 +898,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	reminder := ""
 	timeUntilReset := resetTime.Sub(now)
 	if timeUntilReset > 0 && timeUntilReset < time.Hour && utilisationPercent < 75 {
-		reminder = " | " + pinkStyle.Render("⚠️  Unused utilisation expiring soon!")
+		reminder = " | " + pinkStyle.Render("✈️ Unused session utilisation expiring soon")
 	}
 
 	return fmt.Sprintf("🔮 %s %s%s%s",
