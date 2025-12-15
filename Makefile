@@ -16,8 +16,8 @@ clean:
 	rm -rf bin/
 
 install: build
-	mkdir -p ~/go/bin
-	cp bin/ccu ~/go/bin/ccu
+	mkdir -p "$${GOPATH:-$$HOME/go}/bin"
+	cp bin/ccu "$${GOPATH:-$$HOME/go}/bin/ccu"
 
 modernise:
 	go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix -test ./...
