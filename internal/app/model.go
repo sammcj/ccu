@@ -37,6 +37,12 @@ type AppModel struct {
 	width              int
 	height             int
 
+	// Manual refresh rate limiting
+	lastManualRefresh      time.Time // When last manual refresh was triggered
+	manualRefreshCount     int       // Count of rapid manual refreshes (for backoff)
+	rateLimitWarning       string    // Warning message to display
+	rateLimitWarningExpiry time.Time // When to clear the warning
+
 	// UI Components
 	spinner spinner.Model
 }
@@ -247,4 +253,67 @@ func (m *AppModel) SetForceRefresh(force bool) {
 // ShouldForceRefresh returns true if next refresh should bypass cache
 func (m *AppModel) ShouldForceRefresh() bool {
 	return m.forceRefresh
+}
+
+// CheckManualRefreshRateLimit checks if a manual refresh is allowed
+// Returns (allowed, waitDuration) - if not allowed, waitDuration indicates how long to wait
+func (m *AppModel) CheckManualRefreshRateLimit() (bool, time.Duration) {
+	now := time.Now()
+
+	// Reset backoff if no manual refresh for 30 seconds
+	if !m.lastManualRefresh.IsZero() && now.Sub(m.lastManualRefresh) >= 30*time.Second {
+		m.manualRefreshCount = 0
+	}
+
+	// Calculate required interval based on backoff level
+	// Level increases every 2 requests: 1s, 1s, 2s, 2s, 4s, 4s, 8s, 8s...
+	level := m.manualRefreshCount / 2
+	requiredInterval := time.Second * time.Duration(1<<level) // 2^level seconds
+	if requiredInterval > 60*time.Second {
+		requiredInterval = 60 * time.Second // Cap at 60s
+	}
+
+	// Check if enough time has passed
+	if !m.lastManualRefresh.IsZero() {
+		elapsed := now.Sub(m.lastManualRefresh)
+		if elapsed < requiredInterval {
+			return false, requiredInterval - elapsed
+		}
+	}
+
+	return true, 0
+}
+
+// RecordManualRefresh records a successful manual refresh
+func (m *AppModel) RecordManualRefresh() {
+	now := time.Now()
+
+	// Reset backoff if it's been 30s since last refresh
+	if !m.lastManualRefresh.IsZero() && now.Sub(m.lastManualRefresh) >= 30*time.Second {
+		m.manualRefreshCount = 0
+	}
+
+	m.lastManualRefresh = now
+	m.manualRefreshCount++
+}
+
+// SetRateLimitWarning sets a temporary rate limit warning
+func (m *AppModel) SetRateLimitWarning(msg string, duration time.Duration) {
+	m.rateLimitWarning = msg
+	m.rateLimitWarningExpiry = time.Now().Add(duration)
+}
+
+// GetRateLimitWarning returns the current rate limit warning if not expired
+func (m *AppModel) GetRateLimitWarning() string {
+	if m.rateLimitWarning != "" && time.Now().Before(m.rateLimitWarningExpiry) {
+		return m.rateLimitWarning
+	}
+	return ""
+}
+
+// ClearExpiredRateLimitWarning clears the warning if expired
+func (m *AppModel) ClearExpiredRateLimitWarning() {
+	if m.rateLimitWarning != "" && time.Now().After(m.rateLimitWarningExpiry) {
+		m.rateLimitWarning = ""
+	}
 }

@@ -357,3 +357,98 @@ func TestTimeJumpDetection(t *testing.T) {
 		})
 	}
 }
+
+func TestManualRefreshRateLimit(t *testing.T) {
+	tests := []struct {
+		name             string
+		refreshCount     int
+		timeSinceLast    time.Duration
+		expectAllowed    bool
+		expectWaitApprox time.Duration // Approximate wait time if not allowed
+	}{
+		{
+			name:          "first refresh always allowed",
+			refreshCount:  0,
+			timeSinceLast: 0,
+			expectAllowed: true,
+		},
+		{
+			name:             "second refresh too soon (under 1s)",
+			refreshCount:     1,
+			timeSinceLast:    500 * time.Millisecond,
+			expectAllowed:    false,
+			expectWaitApprox: 500 * time.Millisecond,
+		},
+		{
+			name:          "second refresh after 1s allowed",
+			refreshCount:  1,
+			timeSinceLast: 1 * time.Second,
+			expectAllowed: true,
+		},
+		{
+			name:             "third refresh needs 2s (level 1)",
+			refreshCount:     2,
+			timeSinceLast:    1 * time.Second,
+			expectAllowed:    false,
+			expectWaitApprox: 1 * time.Second,
+		},
+		{
+			name:          "third refresh after 2s allowed",
+			refreshCount:  2,
+			timeSinceLast: 2 * time.Second,
+			expectAllowed: true,
+		},
+		{
+			name:             "fifth refresh needs 4s (level 2)",
+			refreshCount:     4,
+			timeSinceLast:    2 * time.Second,
+			expectAllowed:    false,
+			expectWaitApprox: 2 * time.Second,
+		},
+		{
+			name:          "refresh after 30s idle resets backoff",
+			refreshCount:  10,
+			timeSinceLast: 30 * time.Second,
+			expectAllowed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := models.DefaultConfig()
+			model := NewModel(config)
+
+			// Set up state
+			if tt.refreshCount > 0 {
+				model.lastManualRefresh = time.Now().Add(-tt.timeSinceLast)
+				model.manualRefreshCount = tt.refreshCount
+			}
+
+			allowed, waitDuration := model.CheckManualRefreshRateLimit()
+
+			assert.Equal(t, tt.expectAllowed, allowed, "allowed mismatch")
+
+			if !tt.expectAllowed && tt.expectWaitApprox > 0 {
+				// Allow 100ms tolerance for timing
+				assert.InDelta(t, tt.expectWaitApprox.Seconds(), waitDuration.Seconds(), 0.2,
+					"wait duration should be approximately %v", tt.expectWaitApprox)
+			}
+		})
+	}
+}
+
+func TestRateLimitWarning(t *testing.T) {
+	config := models.DefaultConfig()
+	model := NewModel(config)
+
+	// No warning initially
+	assert.Empty(t, model.GetRateLimitWarning())
+
+	// Set warning
+	model.SetRateLimitWarning("Rate limited", 2*time.Second)
+	assert.Equal(t, "Rate limited", model.GetRateLimitWarning())
+
+	// Warning should expire
+	model.rateLimitWarningExpiry = time.Now().Add(-1 * time.Second)
+	assert.Empty(t, model.GetRateLimitWarning())
+}

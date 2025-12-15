@@ -55,7 +55,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case " ", "r":
-			// Manual refresh - bypass OAuth cache
+			// Manual refresh with rate limiting
+			allowed, waitDuration := m.CheckManualRefreshRateLimit()
+			if !allowed {
+				m.SetRateLimitWarning(
+					fmt.Sprintf("Rate limited - wait %.0fs", waitDuration.Seconds()),
+					2*time.Second,
+				)
+				return m, nil
+			}
+			m.RecordManualRefresh()
 			m.SetForceRefresh(true)
 			return m, loadDataCmdWithModel(m.config, &m)
 		}
@@ -162,12 +171,14 @@ func (m AppModel) View() string {
 		return ui.WarningStyle.Render("No usage data found.\n\nPress q to quit")
 	}
 
+	var content string
+
 	// Render based on view mode
 	switch m.config.ViewMode {
 	case models.ViewModeDaily:
-		return ui.RenderDailyView(m.GetEntries(), m.width)
+		content = ui.RenderDailyView(m.GetEntries(), m.width)
 	case models.ViewModeMonthly:
-		return ui.RenderMonthlyView(m.GetEntries(), m.width)
+		content = ui.RenderMonthlyView(m.GetEntries(), m.width)
 	default:
 		// Create dashboard data
 		data := ui.DashboardData{
@@ -178,8 +189,15 @@ func (m AppModel) View() string {
 			WeeklyUsage:    m.weeklyUsage,
 			OAuthData:      m.oauthData,
 		}
-		return ui.RenderDashboard(data)
+		content = ui.RenderDashboard(data)
 	}
+
+	// Append rate limit warning if active
+	if warning := m.GetRateLimitWarning(); warning != "" {
+		content += "\n" + ui.WarningStyle.Render("  "+warning)
+	}
+
+	return content
 }
 
 // loadDataCmd loads usage data in the background
