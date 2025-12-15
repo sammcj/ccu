@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sammcj/ccu/internal/models"
 )
@@ -36,11 +37,29 @@ func FindJSONLFiles(rootPath string) ([]string, error) {
 }
 
 // ReadUsageEntries reads usage entries from JSONL files
+// Optimised to filter during parsing to reduce memory usage
 func ReadUsageEntries(files []string, hoursBack int) ([]models.UsageEntry, error) {
+	// Calculate cutoff time upfront
+	var cutoff time.Time
+	if hoursBack > 0 {
+		cutoff = time.Now().Add(-time.Duration(hoursBack) * time.Hour)
+	}
+
+	// Use a map for deduplication during read to avoid storing duplicates
+	seen := make(map[string]bool)
 	var allEntries []models.UsageEntry
 
 	for _, file := range files {
-		entries, err := readJSONLFile(file)
+		// Check file modification time - skip old files entirely
+		if hoursBack > 0 {
+			info, err := os.Stat(file)
+			if err == nil && info.ModTime().Before(cutoff) {
+				// File hasn't been modified since cutoff, skip entirely
+				continue
+			}
+		}
+
+		entries, err := readJSONLFileWithFilter(file, cutoff, seen)
 		if err != nil {
 			// Silently skip files that can't be read (e.g., too large)
 			// These are typically file-history snapshots that aren't needed
@@ -49,20 +68,16 @@ func ReadUsageEntries(files []string, hoursBack int) ([]models.UsageEntry, error
 		allEntries = append(allEntries, entries...)
 	}
 
-	// Deduplicate entries
-	allEntries = DeduplicateEntries(allEntries)
-
-	// Filter by time
-	allEntries = FilterByTime(allEntries, hoursBack)
-
 	// Sort by timestamp
 	allEntries = SortEntriesByTime(allEntries)
 
 	return allEntries, nil
 }
 
-// readJSONLFile reads a single JSONL file
-func readJSONLFile(filePath string) ([]models.UsageEntry, error) {
+// readJSONLFileWithFilter reads a JSONL file with time filtering and deduplication
+// cutoff: entries before this time are skipped (zero value = no filter)
+// seen: map for deduplication (nil = no deduplication)
+func readJSONLFileWithFilter(filePath string, cutoff time.Time, seen map[string]bool) ([]models.UsageEntry, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("opening file: %w", err)
@@ -77,6 +92,7 @@ func readJSONLFile(filePath string) ([]models.UsageEntry, error) {
 	buf := make([]byte, maxCapacity)
 	scanner.Buffer(buf, maxCapacity)
 
+	hasCutoff := !cutoff.IsZero()
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
@@ -89,13 +105,27 @@ func readJSONLFile(filePath string) ([]models.UsageEntry, error) {
 
 		entry, err := ParseJSONLLine(line)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: %s:%d: %v\n", filePath, lineNum, err)
+			// Suppress warnings for cleaner output
 			continue
 		}
 
 		// Skip nil entries (expected skips from parser)
 		if entry == nil {
 			continue
+		}
+
+		// Apply time filter during parse
+		if hasCutoff && entry.Timestamp.Before(cutoff) {
+			continue
+		}
+
+		// Apply deduplication during parse
+		if seen != nil {
+			hash := entry.Hash()
+			if seen[hash] {
+				continue
+			}
+			seen[hash] = true
 		}
 
 		entries = append(entries, *entry)

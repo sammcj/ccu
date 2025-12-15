@@ -108,3 +108,8 @@ func CalculateCostForTokens(model string, input, output, cacheCreation, cacheRea
 
 	return cost
 }
+
+// GetPricingSource returns the pricing source description
+func GetPricingSource() string {
+	return "Anthropic API pricing (https://www.anthropic.com/pricing)"
+}

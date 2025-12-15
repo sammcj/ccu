@@ -24,6 +24,7 @@ func ParseFlags() (*models.Config, error) {
 	// Define flags
 	plan := flag.String("plan", "max5", "Plan type: pro, max5, max20, custom")
 	viewMode := flag.String("view", "realtime", "View mode: realtime, daily, monthly")
+	reportMode := flag.String("report", "", "Generate static report to stdout: daily, monthly (bypasses TUI)")
 	refreshRate := flag.Int("refresh", 30, "Refresh rate in seconds (1-60, default 30 for JSONL, 60 for OAuth)")
 	hoursBack := flag.Int("hours", 24, "Hours of history to load")
 	dataPath := flag.String("data", "", "Path to Claude data directory (default: ~/.claude/projects)")
@@ -88,17 +89,39 @@ func ParseFlags() (*models.Config, error) {
 		return nil, fmt.Errorf("invalid view mode: %s (must be realtime, daily, or monthly)", *viewMode)
 	}
 
+	// Validate and set report mode
+	switch *reportMode {
+	case "":
+		config.ReportMode = models.ReportModeNone
+	case "daily":
+		config.ReportMode = models.ReportModeDaily
+	case "monthly":
+		config.ReportMode = models.ReportModeMonthly
+	default:
+		return nil, fmt.Errorf("invalid report mode: %s (must be daily or monthly)", *reportMode)
+	}
+
 	// Validate and set refresh rate
 	if *refreshRate < 1 || *refreshRate > 60 {
 		return nil, fmt.Errorf("refresh rate must be between 1 and 60 seconds")
 	}
 	config.RefreshRate = time.Duration(*refreshRate) * time.Second
 
-	// Set hours back
+	// Set hours back - auto-adjust for report modes if using default
 	if *hoursBack < 1 {
 		return nil, fmt.Errorf("hours must be at least 1")
 	}
 	config.HoursBack = *hoursBack
+
+	// For report modes, auto-expand hours to capture relevant data
+	if config.ReportMode != models.ReportModeNone && *hoursBack == 24 {
+		switch config.ReportMode {
+		case models.ReportModeDaily:
+			config.HoursBack = 720 // 30 days
+		case models.ReportModeMonthly:
+			config.HoursBack = 8760 // 365 days (1 year)
+		}
+	}
 
 	// Set weekly flag
 	config.ShowWeekly = *showWeekly
@@ -123,7 +146,9 @@ func printHelp() {
 	fmt.Println("Examples:")
 	fmt.Println("  ccu                                    # Run with default settings (Max5 plan)")
 	fmt.Println("  ccu -plan=pro                          # Use Pro plan limits")
-	fmt.Println("  ccu -view=daily                        # Show daily aggregation view")
+	fmt.Println("  ccu -view=daily                        # Show daily aggregation view (TUI)")
+	fmt.Println("  ccu -report=monthly                    # Print monthly usage report to stdout")
+	fmt.Println("  ccu -report=daily -hours=90           # Print last 90 days of daily usage")
 	fmt.Println("  ccu -refresh=10                        # Refresh every 10 seconds")
 	fmt.Println("  ccu -hours=48                          # Load last 48 hours of data")
 	fmt.Println("  ccu -plan=custom -custom-tokens=50000  # Use custom token limit")

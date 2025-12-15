@@ -22,6 +22,9 @@ type Config struct {
 
 	// Feature flags
 	ShowWeekly bool
+
+	// Report mode (non-interactive output to stdout)
+	ReportMode ReportMode
 }
 
 // ViewMode represents the display mode
@@ -40,6 +43,15 @@ const (
 	ThemeAuto  Theme = "auto"
 	ThemeLight Theme = "light"
 	ThemeDark  Theme = "dark"
+)
+
+// ReportMode represents non-interactive report output
+type ReportMode string
+
+const (
+	ReportModeNone    ReportMode = ""
+	ReportModeDaily   ReportMode = "daily"
+	ReportModeMonthly ReportMode = "monthly"
 )
 
 // DefaultConfig returns the default configuration

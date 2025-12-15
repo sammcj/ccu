@@ -7,6 +7,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sammcj/ccu/internal/app"
 	"github.com/sammcj/ccu/internal/config"
+	"github.com/sammcj/ccu/internal/data"
+	"github.com/sammcj/ccu/internal/models"
+	"github.com/sammcj/ccu/internal/ui"
 )
 
 // Version information, set via ldflags during build
@@ -29,6 +32,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Handle report mode (non-interactive output to stdout)
+	if cfg.ReportMode != models.ReportModeNone {
+		runReport(cfg)
+		return
+	}
+
 	// Create application model
 	model := app.NewModel(cfg)
 
@@ -45,4 +54,30 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error running application: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runReport generates a static report and outputs to stdout
+func runReport(cfg *models.Config) {
+	// Load usage data
+	entries, err := data.LoadUsageData(cfg.DataPath, cfg.HoursBack)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading data: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("No usage data found.")
+		return
+	}
+
+	// Generate report based on mode
+	var report string
+	switch cfg.ReportMode {
+	case models.ReportModeDaily:
+		report = ui.GenerateDailyReport(entries, cfg.Timezone)
+	case models.ReportModeMonthly:
+		report = ui.GenerateMonthlyReport(entries, cfg.Timezone)
+	}
+
+	fmt.Print(report)
 }
