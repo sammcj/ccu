@@ -84,6 +84,44 @@ func TestStaleUtilisationDetection(t *testing.T) {
 	}
 }
 
+func TestFormatModelNameSimple(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		// Model names with dates
+		{"claude-opus-4-5-20251101", "Opus 4.5"},
+		{"claude-sonnet-4-20250514", "Sonnet 4"},
+		{"claude-haiku-3-5-20241022", "Haiku 3.5"},
+		{"claude-sonnet-5-1-20260301", "Sonnet 5.1"},
+		{"claude-opus-5-20260101", "Opus 5"},
+
+		// Without dates
+		{"claude-opus-4-5", "Opus 4.5"},
+		{"claude-sonnet-4", "Sonnet 4"},
+		{"opus-4-5", "Opus 4.5"},
+		{"sonnet", "Sonnet"},
+		{"claude-3-opus", "Opus"},
+		{"claude-3-5-sonnet", "Sonnet"},
+		{"claude-3-haiku", "Haiku"},
+
+		// Simple names
+		{"opus", "Opus"},
+		{"sonnet", "Sonnet"},
+		{"haiku", "Haiku"},
+
+		// Unknown models pass through
+		{"unknown-model", "unknown-model"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := formatModelNameSimple(tt.input)
+			assert.Equal(t, tt.expected, result, "Model name formatting mismatch")
+		})
+	}
+}
+
 // TestResetTimeCalculation tests that reset times in the past are correctly adjusted
 func TestResetTimeCalculation(t *testing.T) {
 	tests := []struct {

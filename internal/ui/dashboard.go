@@ -12,6 +12,31 @@ import (
 	"github.com/sammcj/ccu/internal/oauth"
 )
 
+// Column positions (1-based) for ANSI cursor positioning
+// Using escape sequence \x1b[<n>G to move cursor to absolute column n
+const (
+	colPosLabel  = 5  // Column where label starts (after emoji)
+	colPosBar    = 27 // Column where progress bar starts
+	colPosValue  = 74 // Column where value starts (after 47-char bar)
+	colPosSuffix = 86 // Column where suffix starts
+)
+
+// formatRow creates a consistently formatted progress bar row.
+// Uses ANSI escape sequences to position cursor at fixed columns,
+// ensuring alignment regardless of how the terminal renders emoji widths.
+func formatRow(emoji, label, bar, value, suffix string) string {
+	// \x1b[nG moves cursor to column n (1-based)
+	var b strings.Builder
+	b.WriteString(emoji)
+	b.WriteString(fmt.Sprintf("\x1b[%dG%s", colPosLabel, label))
+	b.WriteString(fmt.Sprintf("\x1b[%dG%s", colPosBar, bar))
+	b.WriteString(fmt.Sprintf("\x1b[%dG%s", colPosValue, value))
+	if suffix != "" {
+		b.WriteString(fmt.Sprintf("\x1b[%dG%s", colPosSuffix, suffix))
+	}
+	return b.String()
+}
+
 // DashboardData contains all data needed to render the dashboard
 type DashboardData struct {
 	Config         *models.Config
@@ -118,14 +143,15 @@ func renderWeeklyUsageSingleColumn(weekly models.WeeklyUsage, barWidth int) []st
 		if filled > barWidth-2 {
 			filled = barWidth - 2
 		}
-		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled)
+		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
 		barStyle := lipgloss.NewStyle().Foreground(ColorWhite)
 		percentStyle := GetPercentageStyle(sonnetPercent)
-		sonnetLine := fmt.Sprintf("🗓️  Weekly - Sonnet:      [%s] %s         %.1f / %.1f hrs",
+		sonnetLine := formatRow(
+			"🗓️",
+			"Weekly - Sonnet:",
 			barStyle.Render(bar),
 			percentStyle.Render(fmt.Sprintf("%.1f%%", sonnetPercent)),
-			weekly.SonnetHours,
-			weekly.SonnetLimit,
+			fmt.Sprintf("%.1f / %.1f hrs", weekly.SonnetHours, weekly.SonnetLimit),
 		)
 		lines = append(lines, sonnetLine)
 	}
@@ -143,14 +169,15 @@ func renderWeeklyUsageSingleColumn(weekly models.WeeklyUsage, barWidth int) []st
 		if filled > barWidth-2 {
 			filled = barWidth - 2
 		}
-		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled)
+		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
 		barStyle := lipgloss.NewStyle().Foreground(ColorWhite)
 		percentStyle := GetPercentageStyle(opusPercent)
-		opusLine := fmt.Sprintf("🗓️  Weekly - Opus:        [%s] %s         %.1f / %.1f hrs",
+		opusLine := formatRow(
+			"🗓️",
+			"Weekly - Opus:",
 			barStyle.Render(bar),
 			percentStyle.Render(fmt.Sprintf("%.1f%%", opusPercent)),
-			weekly.OpusHours,
-			weekly.OpusLimit,
+			fmt.Sprintf("%.1f / %.1f hrs", weekly.OpusHours, weekly.OpusLimit),
 		)
 		lines = append(lines, opusLine)
 	}
@@ -263,7 +290,7 @@ func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, 
 	if tokenFilled < 0 {
 		tokenFilled = 0
 	}
-	tokenBar := strings.Repeat("█", tokenFilled) + strings.Repeat("░", normalBarWidth-2-tokenFilled)
+	tokenBar := "[" + strings.Repeat("█", tokenFilled) + strings.Repeat("░", normalBarWidth-2-tokenFilled) + "]"
 	tokenStyle := GetPercentageStyle(tokenPercent)
 
 	costFilled := int((costPercent / 100) * float64(normalBarWidth-2))
@@ -273,7 +300,7 @@ func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, 
 	if costFilled < 0 {
 		costFilled = 0
 	}
-	costBar := strings.Repeat("█", costFilled) + strings.Repeat("░", normalBarWidth-2-costFilled)
+	costBar := "[" + strings.Repeat("█", costFilled) + strings.Repeat("░", normalBarWidth-2-costFilled) + "]"
 	costStyle := GetPercentageStyle(costPercent)
 
 	// Cost burn rate in dollars per hour for readability
@@ -287,17 +314,25 @@ func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, 
 	resetStr := ""
 	if !sessionResetTime.IsZero() {
 		whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
-		resetStr = "      " + whiteStyle.Render(fmt.Sprintf("[Resets: %s]", sessionResetTime.Local().Format("3:04 PM")))
+		resetStr = whiteStyle.Render(fmt.Sprintf("[Resets: %s]", sessionResetTime.Local().Format("3:04 PM")))
 	}
 
-	// Format: first bar aligned with other bars, second bar starts where second column (like "Remaining") starts
-	return fmt.Sprintf("🔥 Burn Rate - Tokens:   [%s] %s\n💸 Burn Rate - Cost:     [%s] %s%s",
+	// Format using formatRow for consistent alignment
+	tokenLine := formatRow(
+		"🔥",
+		"Burn Rate - Tokens:",
 		tokenStyle.Render(tokenBar),
 		tokenValueStyle.Render(fmt.Sprintf("%.0f/min", tokenBurnRate)),
+		"",
+	)
+	costLine := formatRow(
+		"💸",
+		"Burn Rate - Cost:",
 		costStyle.Render(costBar),
 		costValueStyle.Render(fmt.Sprintf("$%.2f/hr", costPerHour)),
 		resetStr,
 	)
+	return tokenLine + "\n" + costLine
 }
 
 // renderSessionCost renders the session cost bar
@@ -313,13 +348,16 @@ func renderSessionCost(session *models.SessionBlock, limits models.Limits, barWi
 	if costFilled > barWidth-2 {
 		costFilled = barWidth - 2
 	}
-	costBar := strings.Repeat("█", costFilled) + strings.Repeat("░", barWidth-2-costFilled)
+	costBar := "[" + strings.Repeat("█", costFilled) + strings.Repeat("░", barWidth-2-costFilled) + "]"
 	// Use same green-to-red color for both bar and percentage
 	costStyle := GetPercentageStyle(costPercent)
 
-	return fmt.Sprintf("💸 Session - Cost:       [%s] %s",
+	return formatRow(
+		"💸",
+		"Session - Cost:",
 		costStyle.Render(costBar),
 		costStyle.Render(fmt.Sprintf("%.1f%%", costPercent)),
+		"",
 	)
 }
 
@@ -336,14 +374,16 @@ func renderSessionMessages(session *models.SessionBlock, limits models.Limits, b
 	if msgFilled > barWidth-2 {
 		msgFilled = barWidth - 2
 	}
-	msgBar := strings.Repeat("█", msgFilled) + strings.Repeat("░", barWidth-2-msgFilled)
+	msgBar := "[" + strings.Repeat("█", msgFilled) + strings.Repeat("░", barWidth-2-msgFilled) + "]"
 	// Use same green-to-red color for both bar and percentage
 	msgStyle := GetPercentageStyle(msgPercent)
 
-	return fmt.Sprintf("📊 Session - Messages:   [%s] %s         🔥 Rate: %.1f tokens/min",
+	return formatRow(
+		"📊",
+		"Session - Messages:",
 		msgStyle.Render(msgBar),
 		msgStyle.Render(fmt.Sprintf("%.1f%%", msgPercent)),
-		burnRate,
+		fmt.Sprintf("🔥 Rate: %.1f tokens/min", burnRate),
 	)
 }
 
@@ -373,12 +413,14 @@ func renderTimeBeforeReset(session *models.SessionBlock, now time.Time, barWidth
 		filled = 0
 	}
 	// Reverse: empty blocks on left, filled blocks on right (drains from right to left)
-	bar := strings.Repeat("░", barWidth-2-filled) + strings.Repeat("█", filled)
+	bar := "[" + strings.Repeat("░", barWidth-2-filled) + strings.Repeat("█", filled) + "]"
 	// For time remaining, use gold → green gradient (100% = gold/calm, 0% = green/ready to reset)
 	// Both bar and text use same colour: gold at start → green at reset
 	percentStyle := GetTimeRemainingStyle(percent)
 
-	return fmt.Sprintf("⏱️  Time Before Reset     [%s] %s         %s",
+	return formatRow(
+		"⏱️",
+		"Time Before Reset:",
 		percentStyle.Render(bar),
 		percentStyle.Render(fmt.Sprintf("%.1f%%", percent)),
 		percentStyle.Render(fmt.Sprintf("⏱️  Remaining: %.1f / %.1f hours", remaining.Hours(), sessionDuration)),
@@ -457,30 +499,50 @@ func renderPrediction(session *models.SessionBlock, limits models.Limits, now ti
 
 // Helper functions
 
-// formatModelNameSimple returns simplified model names without padding for single-line display
+// formatModelNameSimple returns simplified model names for display.
+// Converts full API names like "claude-opus-4-5-20251101" to "Opus 4.5"
 func formatModelNameSimple(model string) string {
-	switch model {
-	case "claude-sonnet-4-5":
-		return "Sonnet 4.5"
-	case "claude-sonnet-4":
-		return "Sonnet 4"
-	case "claude-3-5-sonnet":
-		return "Sonnet 3.5"
-	case "claude-opus-4-5":
-		return "Opus 4.5"
-	case "claude-opus-4":
-		return "Opus 4"
-	case "claude-3-opus":
-		return "Opus 3"
-	case "claude-haiku-4-5":
-		return "Haiku 4.5"
-	case "claude-3-5-haiku":
-		return "Haiku 3.5"
-	case "claude-3-haiku":
-		return "Haiku 3"
-	default:
-		return model
+	name := strings.TrimPrefix(model, "claude-")
+
+	// Remove date suffix if present (8-digit date like -20251101)
+	parts := strings.Split(name, "-")
+	if len(parts) > 0 {
+		last := parts[len(parts)-1]
+		if len(last) == 8 && isNumeric(last) {
+			parts = parts[:len(parts)-1]
+			name = strings.Join(parts, "-")
+		}
 	}
+
+	// Find model family and extract version
+	families := []string{"opus", "sonnet", "haiku"}
+	for _, family := range families {
+		if strings.Contains(name, family) {
+			idx := strings.Index(name, family)
+			afterFamily := strings.TrimPrefix(name[idx+len(family):], "-")
+
+			// Convert version dashes to dots (e.g., "4-5" -> "4.5")
+			version := strings.ReplaceAll(afterFamily, "-", ".")
+
+			familyName := strings.ToUpper(family[:1]) + family[1:]
+			if version != "" {
+				return familyName + " " + version
+			}
+			return familyName
+		}
+	}
+
+	return model
+}
+
+// isNumeric checks if a string contains only digits
+func isNumeric(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 // renderSessionLimitWarning displays a prominent warning if session limits are approaching or critical
@@ -518,14 +580,14 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 		if filled > barWidth-2 {
 			filled = barWidth - 2
 		}
-		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled)
+		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
 
 		// Parse reset time
 		resetTime, err := oauth.ParseResetTime(oauthData.SevenDay.ResetsAt)
 		resetStr := ""
 		whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
 		if err == nil {
-			resetStr = " " + whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
+			resetStr = whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
 				resetTime.Local().Format("Mon"),
 				resetTime.Local().Format("3:04 PM")))
 		}
@@ -534,10 +596,13 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 		barStyle := GetPercentageStyle(allModelsPercent)
 		percentStyle := GetPercentageStyle(allModelsPercent)
 
-		line := fmt.Sprintf("🗓️  Weekly - All Models:  [%s] %s        %s",
+		line := formatRow(
+			"🗓️",
+			"Weekly - All Models:",
 			barStyle.Render(bar),
 			percentStyle.Render(fmt.Sprintf("%.1f%%", allModelsPercent)),
-			resetStr)
+			resetStr,
+		)
 		lines = append(lines, line)
 	}
 
@@ -549,20 +614,10 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 		if filled > barWidth-2 {
 			filled = barWidth - 2
 		}
-		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled)
+		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
 
 		limitHours := weeklyLimits.SonnetHours
 		usedHours := (sonnetPercent / 100) * limitHours
-
-		// Parse reset time
-		resetTime, err := oauth.ParseResetTime(oauthData.SevenDaySonnet.ResetsAt)
-		resetStr := ""
-		whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
-		if err == nil {
-			resetStr = whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
-				resetTime.Local().Format("Mon"),
-				resetTime.Local().Format("3:04 PM")))
-		}
 
 		// Use green-to-red gradient for both bar and percentage
 		barStyle := GetPercentageStyle(sonnetPercent)
@@ -571,11 +626,13 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 		// Hours value in parentheses
 		hoursValue := GetPercentageStyle(sonnetPercent).Render(fmt.Sprintf("(%.1f / %.1f hrs)", usedHours, limitHours))
 
-		line := fmt.Sprintf("🗓️  Weekly - Sonnet:      [%s] %s          %s %s",
+		line := formatRow(
+			"🗓️",
+			"Weekly - Sonnet:",
 			barStyle.Render(bar),
 			percentStyle.Render(fmt.Sprintf("%.1f%%", sonnetPercent)),
-			resetStr,
-			hoursValue)
+			hoursValue,
+		)
 		lines = append(lines, line)
 	}
 
@@ -586,22 +643,10 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 		if filled > barWidth-2 {
 			filled = barWidth - 2
 		}
-		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled)
+		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
 
 		limitHours := weeklyLimits.OpusHours
 		usedHours := (opusPercent / 100) * limitHours
-
-		// Parse reset time (note: ResetsAt can be nil for Opus)
-		resetStr := ""
-		whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
-		if oauthData.SevenDayOpus.ResetsAt != nil {
-			resetTime, err := oauth.ParseResetTime(*oauthData.SevenDayOpus.ResetsAt)
-			if err == nil {
-				resetStr = whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
-					resetTime.Local().Format("Mon"),
-					resetTime.Local().Format("3:04 PM")))
-			}
-		}
 
 		// Use green-to-red gradient for both bar and percentage
 		barStyle := GetPercentageStyle(opusPercent)
@@ -610,11 +655,13 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 		// Hours value in parentheses
 		hoursValue := GetPercentageStyle(opusPercent).Render(fmt.Sprintf("(%.1f / %.1f hrs)", usedHours, limitHours))
 
-		line := fmt.Sprintf("🗓️  Weekly - Opus:        [%s] %s          %s %s",
+		line := formatRow(
+			"🗓️",
+			"Weekly - Opus:",
 			barStyle.Render(bar),
 			percentStyle.Render(fmt.Sprintf("%.1f%%", opusPercent)),
-			resetStr,
-			hoursValue)
+			hoursValue,
+		)
 		lines = append(lines, line)
 	}
 
@@ -663,16 +710,19 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 	if filled > barWidth-2 {
 		filled = barWidth - 2
 	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled)
+	bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
 
 	// Use same green-to-red colour for both bar and percentage
 	usageStyle := GetPercentageStyle(percent)
 
-	// Session usage with distribution on same line (aligned with time remaining below)
-	line := fmt.Sprintf("💸 Session - Usage:      [%s] %s         %s",
+	// Session usage with distribution on same line
+	line := formatRow(
+		"💸",
+		"Session - Usage:",
 		usageStyle.Render(bar),
 		usageStyle.Render(fmt.Sprintf("%.1f%%", percent)),
-		sessionDistribution)
+		sessionDistribution,
+	)
 	lines = append(lines, line)
 
 	timeUntilReset := time.Until(resetTime)
@@ -700,15 +750,18 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 		timeFilled = 0
 	}
 	// Reverse: empty blocks on left, filled blocks on right (drains from right to left)
-	timeBar := strings.Repeat("░", barWidth-2-timeFilled) + strings.Repeat("█", timeFilled)
+	timeBar := "[" + strings.Repeat("░", barWidth-2-timeFilled) + strings.Repeat("█", timeFilled) + "]"
 
 	// For time remaining, use gold → green gradient (100% = gold/calm, 0% = green/ready to reset)
 	timeStyle := GetTimeRemainingStyle(remainingPercent)
 
-	timeLine := fmt.Sprintf("⏱️  Time Before Reset     [%s] %s         %s",
+	timeLine := formatRow(
+		"⏱️",
+		"Time Before Reset:",
 		timeStyle.Render(timeBar),
 		timeStyle.Render(fmt.Sprintf("%.1f%%", remainingPercent)),
-		timeStyle.Render(fmt.Sprintf("⏱️  Remaining: %.1f / %.1f hours", remaining, totalSessionDuration.Hours())))
+		timeStyle.Render(fmt.Sprintf("⏱️  Remaining: %.1f / %.1f hours", remaining, totalSessionDuration.Hours())),
+	)
 	lines = append(lines, timeLine)
 
 	return lines
