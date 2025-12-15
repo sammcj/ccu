@@ -54,6 +54,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
+		case " ", "r":
+			// Manual refresh - bypass OAuth cache
+			m.SetForceRefresh(true)
+			return m, loadDataCmdWithModel(m.config, &m)
 		}
 
 	case tea.FocusMsg:
