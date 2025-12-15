@@ -445,8 +445,8 @@ func TestRateLimitWarning(t *testing.T) {
 	assert.Empty(t, model.GetRateLimitWarning())
 
 	// Set warning
-	model.SetRateLimitWarning("Rate limited", 2*time.Second)
-	assert.Equal(t, "Rate limited", model.GetRateLimitWarning())
+	model.SetRateLimitWarning("Rate limited manual refresh -", 2*time.Second)
+	assert.Equal(t, "Rate limited manual refresh -", model.GetRateLimitWarning())
 
 	// Warning should expire
 	model.rateLimitWarningExpiry = time.Now().Add(-1 * time.Second)

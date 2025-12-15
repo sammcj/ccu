@@ -59,7 +59,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			allowed, waitDuration := m.CheckManualRefreshRateLimit()
 			if !allowed {
 				m.SetRateLimitWarning(
-					fmt.Sprintf("Rate limited - wait %.0fs", waitDuration.Seconds()),
+					fmt.Sprintf("Rate limited manual refresh - %.0fs", waitDuration.Seconds()),
 					2*time.Second,
 				)
 				return m, nil
