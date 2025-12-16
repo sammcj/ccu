@@ -44,9 +44,7 @@ func main() {
 	// Create Bubbletea program
 	p := tea.NewProgram(
 		model,
-		tea.WithAltScreen(),       // Use alternate screen buffer
-		tea.WithMouseCellMotion(), // Enable mouse support
-		tea.WithReportFocus(),     // Detect terminal focus for refresh on wake
+		tea.WithAltScreen(), // Use alternate screen buffer
 	)
 
 	// Run the program

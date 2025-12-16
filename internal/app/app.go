@@ -69,12 +69,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadDataCmdWithModel(m.config, &m)
 		}
 
-	case tea.FocusMsg:
-		// Terminal regained focus - likely woke from sleep or switched back
-		// Force an immediate refresh bypassing OAuth cache
-		m.SetForceRefresh(true)
-		return m, loadDataCmdWithModel(m.config, &m)
-
 	case tea.WindowSizeMsg:
 		m.SetDimensions(msg.Width, msg.Height)
 		// Trigger a screen clear and redraw after resize to prevent stale content
@@ -149,9 +143,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+		// Only propagate spinner ticks when loading - otherwise the spinner
+		// keeps ticking forever, causing View() to be called every ~100ms
+		// which makes time-based displays update unnecessarily frequently
+		if m.IsLoading() {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 	}
 
 	return m, nil
