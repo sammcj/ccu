@@ -489,7 +489,7 @@ func renderPrediction(session *models.SessionBlock, limits models.Limits, now ti
 
 	reminder := ""
 	if timeUntilReset > 0 && timeUntilReset < time.Hour && usagePercent < 75 {
-		reminder = " " + pinkStyle.Render("✈️ Unused session utilisation expiring soon")
+		reminder = " " + pinkStyle.Render("✈️  Unused session utilisation expiring soon")
 	}
 
 	return fmt.Sprintf("🔮 %s [%s] [%s]%s",
@@ -898,7 +898,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	reminder := ""
 	timeUntilReset := resetTime.Sub(now)
 	if timeUntilReset > 0 && timeUntilReset < time.Hour && utilisationPercent < 75 {
-		reminder = " | " + pinkStyle.Render("✈️ Unused session utilisation expiring soon")
+		reminder = " | " + pinkStyle.Render("✈️  Unused session utilisation expiring soon")
 	}
 
 	// Build "Updated:" timestamp
