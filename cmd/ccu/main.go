@@ -73,6 +73,8 @@ func runReport(cfg *models.Config) {
 	switch cfg.ReportMode {
 	case models.ReportModeDaily:
 		report = ui.GenerateDailyReport(entries, cfg.Timezone)
+	case models.ReportModeWeekly:
+		report = ui.GenerateWeeklyReport(entries, cfg.Timezone)
 	case models.ReportModeMonthly:
 		report = ui.GenerateMonthlyReport(entries, cfg.Timezone)
 	}

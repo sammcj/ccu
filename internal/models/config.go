@@ -51,6 +51,7 @@ type ReportMode string
 const (
 	ReportModeNone    ReportMode = ""
 	ReportModeDaily   ReportMode = "daily"
+	ReportModeWeekly  ReportMode = "weekly"
 	ReportModeMonthly ReportMode = "monthly"
 )
 

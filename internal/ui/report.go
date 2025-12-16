@@ -10,16 +10,21 @@ import (
 	"github.com/sammcj/ccu/internal/pricing"
 )
 
-// ReportStats holds aggregated statistics for a time period
-type ReportStats struct {
-	Period              time.Time
+// ModelStats holds token statistics for a single model
+type ModelStats struct {
 	InputTokens         int
 	OutputTokens        int
 	CacheCreationTokens int
 	CacheReadTokens     int
 	TotalTokens         int
 	TotalCost           float64
-	Models              map[string]bool // Full model names
+}
+
+// ReportStats holds aggregated statistics for a time period
+type ReportStats struct {
+	Period      time.Time
+	ModelStats  map[string]*ModelStats // model name -> stats
+	TotalTokens int                    // period total for sorting
 }
 
 // GenerateDailyReport generates a static daily usage report
@@ -32,6 +37,16 @@ func GenerateDailyReport(entries []models.UsageEntry, timezone *time.Location) s
 	return renderReport(stats, "Daily", timezone)
 }
 
+// GenerateWeeklyReport generates a static weekly usage report
+func GenerateWeeklyReport(entries []models.UsageEntry, timezone *time.Location) string {
+	if len(entries) == 0 {
+		return "No usage data found.\n"
+	}
+
+	stats := aggregateForReport(entries, "weekly", timezone)
+	return renderReport(stats, "Weekly", timezone)
+}
+
 // GenerateMonthlyReport generates a static monthly usage report
 func GenerateMonthlyReport(entries []models.UsageEntry, timezone *time.Location) string {
 	if len(entries) == 0 {
@@ -42,7 +57,7 @@ func GenerateMonthlyReport(entries []models.UsageEntry, timezone *time.Location)
 	return renderReport(stats, "Monthly", timezone)
 }
 
-// aggregateForReport aggregates entries by period (daily or monthly)
+// aggregateForReport aggregates entries by period (daily or monthly) and by model
 func aggregateForReport(entries []models.UsageEntry, period string, timezone *time.Location) []ReportStats {
 	statsMap := make(map[string]*ReportStats)
 
@@ -53,11 +68,18 @@ func aggregateForReport(entries []models.UsageEntry, period string, timezone *ti
 		var key string
 		var periodTime time.Time
 
-		if period == "daily" {
+		switch period {
+		case "daily":
 			key = localTime.Format("2006-01-02")
 			year, month, day := localTime.Date()
 			periodTime = time.Date(year, month, day, 0, 0, 0, 0, timezone)
-		} else {
+		case "weekly":
+			// Use ISO week number (weeks start on Monday)
+			year, week := localTime.ISOWeek()
+			key = fmt.Sprintf("%d-W%02d", year, week)
+			// Calculate the Monday of this ISO week
+			periodTime = getWeekStart(localTime, timezone)
+		default: // monthly
 			key = localTime.Format("2006-01")
 			year, month, _ := localTime.Date()
 			periodTime = time.Date(year, month, 1, 0, 0, 0, 0, timezone)
@@ -65,19 +87,28 @@ func aggregateForReport(entries []models.UsageEntry, period string, timezone *ti
 
 		if statsMap[key] == nil {
 			statsMap[key] = &ReportStats{
-				Period: periodTime,
-				Models: make(map[string]bool),
+				Period:     periodTime,
+				ModelStats: make(map[string]*ModelStats),
 			}
 		}
 
 		s := statsMap[key]
-		s.InputTokens += entry.InputTokens
-		s.OutputTokens += entry.OutputTokens
-		s.CacheCreationTokens += entry.CacheCreationTokens
-		s.CacheReadTokens += entry.CacheReadTokens
+
+		// Get or create model stats
+		modelName := entry.Model
+		if s.ModelStats[modelName] == nil {
+			s.ModelStats[modelName] = &ModelStats{}
+		}
+		ms := s.ModelStats[modelName]
+
+		ms.InputTokens += entry.InputTokens
+		ms.OutputTokens += entry.OutputTokens
+		ms.CacheCreationTokens += entry.CacheCreationTokens
+		ms.CacheReadTokens += entry.CacheReadTokens
+		ms.TotalTokens += entry.TotalTokens()
+		ms.TotalCost += entry.CostUSD
+
 		s.TotalTokens += entry.TotalTokens()
-		s.TotalCost += entry.CostUSD
-		s.Models[entry.Model] = true
 	}
 
 	// Convert to slice and sort by period
@@ -102,144 +133,182 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 
 	// Header
 	sb.WriteString(fmt.Sprintf("Claude Code Token Usage Report - %s (%s)\n", periodType, tzName))
-	sb.WriteString(strings.Repeat("─", 120) + "\n")
+	sb.WriteString(strings.Repeat("─", 140) + "\n")
 
-	// Column headers
-	if periodType == "Monthly" {
-		sb.WriteString(fmt.Sprintf("%-10s  %-32s  %12s  %12s  %14s  %16s  %16s  %12s\n",
-			"Month", "Models", "Input", "Output", "Cache Create", "Cache Read", "Total Tokens", "Est. Cost"))
-	} else {
-		sb.WriteString(fmt.Sprintf("%-12s  %-32s  %12s  %12s  %14s  %16s  %16s  %12s\n",
-			"Date", "Models", "Input", "Output", "Cache Create", "Cache Read", "Total Tokens", "Est. Cost"))
+	// Column headers - use wider model column for full names
+	var periodLabel string
+	var periodWidth int
+	switch periodType {
+	case "Monthly":
+		periodLabel = "Month"
+		periodWidth = 10
+	case "Weekly":
+		periodLabel = "Week"
+		periodWidth = 12
+	default: // Daily
+		periodLabel = "Date"
+		periodWidth = 12
 	}
-	sb.WriteString(strings.Repeat("─", 120) + "\n")
+	sb.WriteString(fmt.Sprintf("%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
+		periodWidth, periodLabel, "Model", "Input", "Output", "Cache Create", "Cache Read", "Total Tokens", "Est. Cost"))
+	sb.WriteString(strings.Repeat("─", 140) + "\n")
 
-	// Totals
+	// Grand totals
 	var totalInput, totalOutput, totalCacheCreate, totalCacheRead, totalTokens int
 	var totalCost float64
-	allModels := make(map[string]bool)
 
-	// Rows
+	// Track partial periods
+	hasPartialPeriod := false
+
+	// Rows - one per model per period
 	for _, s := range stats {
 		var periodStr string
-		if periodType == "Monthly" {
+		isPartial := false
+		now := time.Now().In(timezone)
+
+		switch periodType {
+		case "Monthly":
 			periodStr = s.Period.Format("2006-01")
-			// Mark partial months
-			now := time.Now().In(timezone)
 			if s.Period.Year() == now.Year() && s.Period.Month() == now.Month() {
 				periodStr += " *"
+				isPartial = true
+				hasPartialPeriod = true
 			}
-		} else {
+		case "Weekly":
+			// Format as YYYY-Www
+			year, week := s.Period.ISOWeek()
+			periodStr = fmt.Sprintf("%d-W%02d", year, week)
+			// Check if this is the current week
+			nowYear, nowWeek := now.ISOWeek()
+			if year == nowYear && week == nowWeek {
+				periodStr += " *"
+				isPartial = true
+				hasPartialPeriod = true
+			}
+		default: // Daily
 			periodStr = s.Period.Format("2006-01-02")
+			y1, m1, d1 := s.Period.Date()
+			y2, m2, d2 := now.Date()
+			if y1 == y2 && m1 == m2 && d1 == d2 {
+				periodStr += " *"
+				isPartial = true
+				hasPartialPeriod = true
+			}
 		}
 
-		modelsStr := formatModelList(s.Models)
-		for m := range s.Models {
-			allModels[m] = true
+		// Get sorted model names for consistent ordering
+		modelNames := getSortedModelNames(s.ModelStats)
+
+		// Print each model on its own row
+		for i, modelName := range modelNames {
+			ms := s.ModelStats[modelName]
+
+			// Only show period on first row for this period
+			displayPeriod := ""
+			if i == 0 {
+				displayPeriod = periodStr
+			}
+
+			sb.WriteString(fmt.Sprintf("%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
+				periodWidth,
+				displayPeriod,
+				truncate(modelName, 30),
+				formatNumber(ms.InputTokens),
+				formatNumber(ms.OutputTokens),
+				formatNumber(ms.CacheCreationTokens),
+				formatNumber(ms.CacheReadTokens),
+				formatNumber(ms.TotalTokens),
+				fmt.Sprintf("$%.2f", ms.TotalCost)))
+
+			// Accumulate grand totals
+			totalInput += ms.InputTokens
+			totalOutput += ms.OutputTokens
+			totalCacheCreate += ms.CacheCreationTokens
+			totalCacheRead += ms.CacheReadTokens
+			totalTokens += ms.TotalTokens
+			totalCost += ms.TotalCost
 		}
 
-		if periodType == "Monthly" {
-			sb.WriteString(fmt.Sprintf("%-10s  %-32s  %12s  %12s  %14s  %16s  %16s  %12s\n",
-				periodStr,
-				truncate(modelsStr, 32),
-				formatNumber(s.InputTokens),
-				formatNumber(s.OutputTokens),
-				formatNumber(s.CacheCreationTokens),
-				formatNumber(s.CacheReadTokens),
-				formatNumber(s.TotalTokens),
-				fmt.Sprintf("$%.2f", s.TotalCost)))
-		} else {
-			sb.WriteString(fmt.Sprintf("%-12s  %-32s  %12s  %12s  %14s  %16s  %16s  %12s\n",
-				periodStr,
-				truncate(modelsStr, 32),
-				formatNumber(s.InputTokens),
-				formatNumber(s.OutputTokens),
-				formatNumber(s.CacheCreationTokens),
-				formatNumber(s.CacheReadTokens),
-				formatNumber(s.TotalTokens),
-				fmt.Sprintf("$%.2f", s.TotalCost)))
+		// Add period subtotal if multiple models
+		if len(modelNames) > 1 {
+			var periodInput, periodOutput, periodCacheCreate, periodCacheRead, periodTokens int
+			var periodCost float64
+			for _, ms := range s.ModelStats {
+				periodInput += ms.InputTokens
+				periodOutput += ms.OutputTokens
+				periodCacheCreate += ms.CacheCreationTokens
+				periodCacheRead += ms.CacheReadTokens
+				periodTokens += ms.TotalTokens
+				periodCost += ms.TotalCost
+			}
+
+			subtotalLabel := "Subtotal"
+			if isPartial {
+				subtotalLabel = "Subtotal *"
+			}
+
+			sb.WriteString(fmt.Sprintf("%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
+				periodWidth,
+				"",
+				subtotalLabel,
+				formatNumber(periodInput),
+				formatNumber(periodOutput),
+				formatNumber(periodCacheCreate),
+				formatNumber(periodCacheRead),
+				formatNumber(periodTokens),
+				fmt.Sprintf("$%.2f", periodCost)))
 		}
 
-		totalInput += s.InputTokens
-		totalOutput += s.OutputTokens
-		totalCacheCreate += s.CacheCreationTokens
-		totalCacheRead += s.CacheReadTokens
-		totalTokens += s.TotalTokens
-		totalCost += s.TotalCost
+		// Add blank line between periods for readability
+		sb.WriteString("\n")
 	}
 
-	// Total row
-	sb.WriteString(strings.Repeat("─", 120) + "\n")
-	if periodType == "Monthly" {
-		sb.WriteString(fmt.Sprintf("%-10s  %-32s  %12s  %12s  %14s  %16s  %16s  %12s\n",
-			"TOTAL", "",
-			formatNumber(totalInput),
-			formatNumber(totalOutput),
-			formatNumber(totalCacheCreate),
-			formatNumber(totalCacheRead),
-			formatNumber(totalTokens),
-			fmt.Sprintf("$%.2f", totalCost)))
-	} else {
-		sb.WriteString(fmt.Sprintf("%-12s  %-32s  %12s  %12s  %14s  %16s  %16s  %12s\n",
-			"TOTAL", "",
-			formatNumber(totalInput),
-			formatNumber(totalOutput),
-			formatNumber(totalCacheCreate),
-			formatNumber(totalCacheRead),
-			formatNumber(totalTokens),
-			fmt.Sprintf("$%.2f", totalCost)))
-	}
+	// Grand total row
+	sb.WriteString(strings.Repeat("─", 140) + "\n")
+	sb.WriteString(fmt.Sprintf("%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
+		periodWidth,
+		"TOTAL", "",
+		formatNumber(totalInput),
+		formatNumber(totalOutput),
+		formatNumber(totalCacheCreate),
+		formatNumber(totalCacheRead),
+		formatNumber(totalTokens),
+		fmt.Sprintf("$%.2f", totalCost)))
 
-	// Footer with model list and pricing note
+	// Footer
 	sb.WriteString("\n")
-	sb.WriteString("Models used:\n")
-	for model := range allModels {
-		sb.WriteString(fmt.Sprintf("  • %s\n", model))
+	if hasPartialPeriod {
+		sb.WriteString("* Partial period (current month/week/day)\n")
 	}
-
-	sb.WriteString("\n")
-	sb.WriteString("* Partial period (current month/day)\n")
 	sb.WriteString(fmt.Sprintf("Pricing: %s\n", pricing.GetPricingSource()))
 
 	return sb.String()
 }
 
-// formatModelList formats model names for display
-func formatModelList(models map[string]bool) string {
-	if len(models) == 0 {
-		return "-"
-	}
-
-	// Extract unique short names
-	shortNames := make(map[string]bool)
-	for model := range models {
-		short := getShortModelName(model)
-		shortNames[short] = true
-	}
-
-	// Convert to sorted slice
-	names := make([]string, 0, len(shortNames))
-	for name := range shortNames {
+// getSortedModelNames returns model names sorted alphabetically
+func getSortedModelNames(modelStats map[string]*ModelStats) []string {
+	names := make([]string, 0, len(modelStats))
+	for name := range modelStats {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-
-	return strings.Join(names, ", ")
+	return names
 }
 
-// getShortModelName returns a short display name for a model
-func getShortModelName(model string) string {
-	// Map full model IDs to short display names
-	switch {
-	case strings.Contains(model, "opus"):
-		return "opus"
-	case strings.Contains(model, "sonnet"):
-		return "sonnet"
-	case strings.Contains(model, "haiku"):
-		return "haiku"
-	default:
-		return model
+// getWeekStart returns the Monday of the ISO week containing the given time
+func getWeekStart(t time.Time, timezone *time.Location) time.Time {
+	// Get the weekday (Sunday=0, Monday=1, ..., Saturday=6)
+	weekday := int(t.Weekday())
+	// Convert to ISO weekday (Monday=0, ..., Sunday=6)
+	if weekday == 0 {
+		weekday = 6 // Sunday becomes 6
+	} else {
+		weekday-- // Monday becomes 0, etc.
 	}
+	// Subtract days to get to Monday
+	monday := t.AddDate(0, 0, -weekday)
+	year, month, day := monday.Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, timezone)
 }
 
 // truncate truncates a string to maxLen with ellipsis

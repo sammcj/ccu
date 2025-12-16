@@ -24,7 +24,7 @@ func ParseFlags() (*models.Config, error) {
 	// Define flags
 	plan := flag.String("plan", "max5", "Plan type: pro, max5, max20, custom")
 	viewMode := flag.String("view", "realtime", "View mode: realtime, daily, monthly")
-	reportMode := flag.String("report", "", "Generate static report to stdout: daily, monthly (bypasses TUI)")
+	reportMode := flag.String("report", "", "Generate static report to stdout: daily, weekly, monthly (bypasses TUI)")
 	refreshRate := flag.Int("refresh", 30, "Refresh rate in seconds (1-60, default 30 for JSONL, 60 for OAuth)")
 	hoursBack := flag.Int("hours", 24, "Hours of history to load")
 	dataPath := flag.String("data", "", "Path to Claude data directory (default: ~/.claude/projects)")
@@ -95,10 +95,12 @@ func ParseFlags() (*models.Config, error) {
 		config.ReportMode = models.ReportModeNone
 	case "daily":
 		config.ReportMode = models.ReportModeDaily
+	case "weekly":
+		config.ReportMode = models.ReportModeWeekly
 	case "monthly":
 		config.ReportMode = models.ReportModeMonthly
 	default:
-		return nil, fmt.Errorf("invalid report mode: %s (must be daily or monthly)", *reportMode)
+		return nil, fmt.Errorf("invalid report mode: %s (must be daily, weekly, or monthly)", *reportMode)
 	}
 
 	// Validate and set refresh rate
@@ -118,6 +120,8 @@ func ParseFlags() (*models.Config, error) {
 		switch config.ReportMode {
 		case models.ReportModeDaily:
 			config.HoursBack = 720 // 30 days
+		case models.ReportModeWeekly:
+			config.HoursBack = 2160 // 90 days (~13 weeks)
 		case models.ReportModeMonthly:
 			config.HoursBack = 8760 // 365 days (1 year)
 		}
@@ -148,6 +152,7 @@ func printHelp() {
 	fmt.Println("  ccu -plan=pro                          # Use Pro plan limits")
 	fmt.Println("  ccu -view=daily                        # Show daily aggregation view (TUI)")
 	fmt.Println("  ccu -report=monthly                    # Print monthly usage report to stdout")
+	fmt.Println("  ccu -report=weekly                     # Print weekly usage report to stdout")
 	fmt.Println("  ccu -report=daily -hours=90           # Print last 90 days of daily usage")
 	fmt.Println("  ccu -refresh=10                        # Refresh every 10 seconds")
 	fmt.Println("  ccu -hours=48                          # Load last 48 hours of data")

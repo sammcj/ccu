@@ -54,6 +54,7 @@ ccu -view=monthly  # Monthly aggregation
 
 # Static reports (stdout, no TUI)
 ccu -report=monthly              # Monthly usage report
+ccu -report=weekly               # Weekly usage report (last ~13 weeks)
 ccu -report=daily                # Daily usage report (last 30 days)
 ccu -report=daily -hours=90      # Last 90 days
 
@@ -68,7 +69,7 @@ ccu -hours=48      # Last 48 hours
 
 - `-plan` - Plan type: `pro`, `max5`, `max20`, `custom` (default: `max5`)
 - `-view` - View mode: `realtime`, `daily`, `monthly` (default: `realtime`)
-- `-report` - Generate static report to stdout: `daily`, `monthly` (bypasses TUI)
+- `-report` - Generate static report to stdout: `daily`, `weekly`, `monthly` (bypasses TUI)
 - `-refresh` - UI refresh rate in seconds, 1-60 (default: `5`). Note: OAuth data is cached for 60 seconds regardless of UI refresh rate
 - `-hours` - Hours of history to load from JSONL files (default: `24`, only used in fallback mode)
 - `-data` - Path to Claude data directory (default: `~/.claude/projects`, only used in fallback mode)
