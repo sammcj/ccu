@@ -56,6 +56,7 @@ type UsageData struct {
 		UsedCredits  *float64 `json:"used_credits"`
 		Utilisation  *float64 `json:"utilization"`
 	} `json:"extra_usage"`
+	FetchedAt time.Time `json:"-"` // When this data was fetched (not from API)
 }
 
 // Client handles OAuth-based usage data fetching
@@ -150,6 +151,7 @@ func (c *Client) FetchUsage() (*UsageData, error) {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
+	usage.FetchedAt = time.Now()
 	return &usage, nil
 }
 

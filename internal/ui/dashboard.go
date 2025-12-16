@@ -853,25 +853,21 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 			whiteStyle.Render(fmt.Sprintf("Resets: %s", resetTimeStr)))
 	}
 
-	// Build weekly prediction part
+	// Build weekly prediction part - only show if there's a problem (not OK)
 	var weeklyPart string
 	if showWeekly {
 		weeklyPrediction := analysis.PredictWeeklyDepletion(oauthData, costBurnRate, limits.CostLimitUSD, now)
 		if !weeklyPrediction.ResetTime.IsZero() {
 			var weeklyStr string
 			var weeklyStyle lipgloss.Style
+			showWeeklyPart := false // Only show if there's an issue
 
 			if weeklyPrediction.Utilisation >= 100 {
 				weeklyStr = "Weekly limit exceeded!"
 				weeklyStyle = lipgloss.NewStyle().Foreground(ColorDanger)
-			} else if weeklyPrediction.DepletionTime.IsZero() {
-				weeklyStr = "Weekly: Insufficient data"
-				weeklyStyle = whiteStyle
-			} else if !weeklyPrediction.WillHitLimit {
-				weeklyStr = "Weekly: OK"
-				weeklyStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
-			} else {
-				// Will hit limit before reset - show when (never green since we'll be limited)
+				showWeeklyPart = true
+			} else if !weeklyPrediction.DepletionTime.IsZero() && weeklyPrediction.WillHitLimit {
+				// Will hit limit before reset - show when
 				timeUntil := weeklyPrediction.DepletionTime.Sub(now)
 				weeklyDepletionStr := fmt.Sprintf("%s %s",
 					weeklyPrediction.DepletionTime.Local().Format("Mon"),
@@ -888,9 +884,13 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 				}
 
 				weeklyStr = fmt.Sprintf("Weekly limited: %s", weeklyDepletionStr)
+				showWeeklyPart = true
 			}
+			// Skip showing "Weekly: OK" or "Insufficient data" - only show problems
 
-			weeklyPart = " | [" + weeklyStyle.Render(weeklyStr) + "]"
+			if showWeeklyPart {
+				weeklyPart = " | [" + weeklyStyle.Render(weeklyStr) + "]"
+			}
 		}
 	}
 
@@ -901,11 +901,19 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 		reminder = " | " + pinkStyle.Render("✈️ Unused session utilisation expiring soon")
 	}
 
-	return fmt.Sprintf("🔮 %s %s%s%s",
+	// Build "Updated:" timestamp
+	updatedStr := ""
+	if !oauthData.FetchedAt.IsZero() {
+		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+		updatedStr = " | " + dimStyle.Render(fmt.Sprintf("Updated: %s", oauthData.FetchedAt.Local().Format("3:04 PM")))
+	}
+
+	return fmt.Sprintf("🔮 %s %s%s%s%s",
 		purpleStyle.Render("Prediction:"),
 		sessionPart,
 		weeklyPart,
 		reminder,
+		updatedStr,
 	)
 }
 
