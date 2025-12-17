@@ -32,18 +32,20 @@ type WeeklyLimits struct {
 }
 
 // PredefinedWeeklyLimits contains known weekly limits
+// Note: Opus weekly limits are currently disabled as Anthropic is not enforcing them.
+// Set OpusHours > 0 when/if Anthropic re-enables Opus weekly limits.
 var PredefinedWeeklyLimits = map[string]WeeklyLimits{
 	"pro": {
-		SonnetHours: 60,  // Using mid-range of 40-80
-		OpusHours:   0,   // Pro doesn't have Opus access
+		SonnetHours: 60, // Using mid-range of 40-80
+		OpusHours:   0,  // Pro doesn't have Opus access
 	},
 	"max5": {
 		SonnetHours: 210, // Using mid-range of 140-280
-		OpusHours:   25,  // Using mid-range of 15-35
+		OpusHours:   0,   // Opus weekly limits not currently enforced by Anthropic
 	},
 	"max20": {
 		SonnetHours: 360, // Using mid-range of 240-480
-		OpusHours:   32,  // Using mid-range of 24-40
+		OpusHours:   0,   // Opus weekly limits not currently enforced by Anthropic
 	},
 }
 

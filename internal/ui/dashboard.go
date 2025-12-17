@@ -639,8 +639,9 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 		lines = append(lines, line)
 	}
 
-	// Opus
-	if oauthData.SevenDayOpus != nil && weeklyLimits.OpusHours > 0 {
+	// Opus - only show if API returns SevenDayOpus with a reset time (indicates enforced limit)
+	// This auto-detects when Anthropic enables Opus weekly limits without requiring code changes
+	if oauthData.SevenDayOpus != nil && oauthData.SevenDayOpus.ResetsAt != nil {
 		opusPercent := oauthData.SevenDayOpus.Utilisation
 		filled := int((opusPercent / 100) * float64(barWidth-2))
 		if filled > barWidth-2 {
@@ -648,22 +649,26 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 		}
 		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
 
-		limitHours := weeklyLimits.OpusHours
-		usedHours := (opusPercent / 100) * limitHours
-
 		// Use green-to-red gradient for both bar and percentage
 		barStyle := GetPercentageStyle(opusPercent)
 		percentStyle := GetPercentageStyle(opusPercent)
 
-		// Hours value in parentheses
-		hoursValue := GetPercentageStyle(opusPercent).Render(fmt.Sprintf("(%.1f / %.1f hrs)", usedHours, limitHours))
+		// Show reset time instead of fake hours (we don't know Anthropic's actual limit)
+		resetTime, err := oauth.ParseResetTime(*oauthData.SevenDayOpus.ResetsAt)
+		resetStr := ""
+		if err == nil {
+			whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
+			resetStr = whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
+				resetTime.Local().Format("Mon"),
+				resetTime.Local().Format("3:04 PM")))
+		}
 
 		line := formatRow(
 			"🗓️",
 			"Weekly - Opus:",
 			barStyle.Render(bar),
 			percentStyle.Render(fmt.Sprintf("%.1f%%", opusPercent)),
-			hoursValue,
+			resetStr,
 		)
 		lines = append(lines, line)
 	}
