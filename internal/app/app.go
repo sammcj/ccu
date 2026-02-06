@@ -257,8 +257,9 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 				// Client creation failure is usually permanent (keychain issue)
 				oauthShouldDisable = true
 			}
-		} else if model != nil && model.oauthData != nil {
+		} else if model != nil && model.oauthData != nil && !model.IsOAuthDisabled() {
 			// Reuse cached OAuth data (oauthFreshData remains false)
+			// Don't reuse when OAuth is disabled - the data is stale
 			oauthData = model.oauthData
 		}
 

@@ -100,6 +100,12 @@ func RenderDashboard(data DashboardData) string {
 		output = append(output, renderSessionCost(data.CurrentSession, data.Limits, barWidth))
 		output = append(output, renderSessionMessages(data.CurrentSession, data.Limits, barWidth, burnRate))
 		output = append(output, renderTimeBeforeReset(data.CurrentSession, now, barWidth))
+
+		// Show stale data notice if the session has expired
+		if data.CurrentSession.EndTime.Before(now) {
+			dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+			output = append(output, dimStyle.Render("  (session data is from a previous session - run Claude Code to refresh)"))
+		}
 	}
 
 	output = append(output, "") // Blank line before prediction
@@ -432,6 +438,16 @@ func renderTimeBeforeReset(session *models.SessionBlock, now time.Time, barWidth
 
 // renderPrediction renders cost limit and reset time on a single line
 func renderPrediction(session *models.SessionBlock, limits models.Limits, now time.Time) string {
+	// If session has expired, show stale data notice instead of misleading predictions
+	if session.EndTime.Before(now) {
+		purpleStyle := lipgloss.NewStyle().Foreground(ColorPrediction)
+		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+		return fmt.Sprintf("🔮 %s %s",
+			purpleStyle.Render("Prediction:"),
+			dimStyle.Render("Session ended - waiting for new activity or token refresh"),
+		)
+	}
+
 	costBurnRate := analysis.CalculateCostBurnRate(*session, now)
 	costRemaining := limits.CostLimitUSD - session.CostUSD
 	if costRemaining < 0 {
@@ -551,6 +567,11 @@ func isNumeric(s string) bool {
 // renderSessionLimitWarning displays a prominent warning if session limits are approaching or critical
 func renderSessionLimitWarning(session *models.SessionBlock, limits models.Limits) string {
 	if session == nil {
+		return ""
+	}
+
+	// Don't show warnings for expired sessions - the data is from a past session
+	if session.EndTime.Before(time.Now()) {
 		return ""
 	}
 

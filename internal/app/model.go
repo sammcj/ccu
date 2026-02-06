@@ -188,6 +188,7 @@ func (m *AppModel) HasOAuthData() bool {
 func (m *AppModel) DisableOAuth(reason string) {
 	m.oauthDisabled = true
 	m.oauthDisableReason = reason
+	m.oauthData = nil // Clear stale cached data so JSONL fallback is used
 }
 
 // IsOAuthDisabled returns true if OAuth has been disabled due to an error
