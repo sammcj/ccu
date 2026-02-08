@@ -458,7 +458,11 @@ func renderPrediction(session *models.SessionBlock, limits models.Limits, now ti
 	var costDepletion time.Time
 	var costStyle lipgloss.Style
 
-	if session.IsActive && costBurnRate > 0 && costRemaining > 0 {
+	if session.IsActive && costRemaining <= 0 {
+		// Already at or over the cost limit
+		costDepletionStr = "NOW"
+		costStyle = lipgloss.NewStyle().Foreground(ColorDanger)
+	} else if session.IsActive && costBurnRate > 0 && costRemaining > 0 {
 		costDepletion = analysis.PredictCostDepletion(costBurnRate, costRemaining, now)
 		if !costDepletion.IsZero() {
 			costDepletionStr = costDepletion.Local().Format("3:04 PM")
@@ -468,16 +472,10 @@ func renderPrediction(session *models.SessionBlock, limits models.Limits, now ti
 
 			// Apply color based on time remaining
 			if timeUntilDepletion <= 10*time.Minute {
-				// Red if within 10 minutes
 				costStyle = lipgloss.NewStyle().Foreground(ColorDanger)
-			} else if timeUntilDepletion <= 20*time.Minute {
-				// Orange if within 20 minutes
-				costStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
 			} else if timeUntilDepletion <= 30*time.Minute {
-				// Orange if within 30 minutes
 				costStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
 			} else {
-				// Green otherwise
 				costStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
 			}
 		} else {
@@ -510,7 +508,7 @@ func renderPrediction(session *models.SessionBlock, limits models.Limits, now ti
 
 	return fmt.Sprintf("🔮 %s [%s] [%s]%s",
 		purpleStyle.Render("Prediction:"),
-		costStyle.Render(fmt.Sprintf("Cost limited at: %s", costDepletionStr)),
+		costStyle.Render(fmt.Sprintf("Cost limited: %s", costDepletionStr)),
 		whiteStyle.Render(fmt.Sprintf("Resets: %s", resetStr)),
 		reminder,
 	)
@@ -839,7 +837,12 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 			costRemaining = 0
 		}
 
-		if costBurnRate > 0 && costRemaining > 0 {
+		if costRemaining <= 0 && utilisationPercent >= 100 {
+			// Already at or over the cost limit
+			hasCostPrediction = true
+			costDepletionStr = "NOW"
+			costStyle = lipgloss.NewStyle().Foreground(ColorDanger)
+		} else if costBurnRate > 0 && costRemaining > 0 {
 			costDepletion := analysis.PredictCostDepletion(costBurnRate, costRemaining, now)
 			if !costDepletion.IsZero() {
 				hasCostPrediction = true
