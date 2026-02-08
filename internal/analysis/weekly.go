@@ -157,6 +157,14 @@ func PredictWeeklyDepletion(oauthData *oauth.UsageData, _ float64, _ float64, no
 		return prediction
 	}
 
+	// Don't extrapolate from less than 24 hours of data.
+	// With only a few hours elapsed, the average burn rate is dominated by
+	// active usage and doesn't account for sleep/idle time, producing
+	// wildly aggressive predictions.
+	if hoursElapsed < 24 {
+		return prediction
+	}
+
 	// Calculate actual weekly burn rate from real usage
 	// This is % per hour based on actual consumption over the week
 	weeklyBurnRatePerHour := prediction.Utilisation / hoursElapsed
