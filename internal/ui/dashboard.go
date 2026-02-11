@@ -465,17 +465,24 @@ func renderPrediction(session *models.SessionBlock, limits models.Limits, now ti
 	} else if session.IsActive && costBurnRate > 0 && costRemaining > 0 {
 		costDepletion = analysis.PredictCostDepletion(costBurnRate, costRemaining, now)
 		if !costDepletion.IsZero() {
-			costDepletionStr = costDepletion.Local().Format("3:04 PM")
-
-			// Calculate time until cost depletion
-			timeUntilDepletion := costDepletion.Sub(now)
-
-			// Apply color based on time remaining
-			if timeUntilDepletion <= 10*time.Minute {
-				costStyle = lipgloss.NewStyle().Foreground(ColorDanger)
-			} else if timeUntilDepletion <= 30*time.Minute {
+			if costDepletion.Before(session.EndTime) {
+				// Cost depletion before reset - will hit limit before resetting
+				costDepletionStr = costDepletion.Local().Format("3:04 PM")
+				timeUntilDepletion := costDepletion.Sub(now)
+				if timeUntilDepletion <= 10*time.Minute {
+					costStyle = lipgloss.NewStyle().Foreground(ColorDanger)
+				} else if timeUntilDepletion <= 30*time.Minute {
+					costStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
+				} else {
+					costStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+				}
+			} else if costDepletion.Sub(session.EndTime) <= 30*time.Minute {
+				// Close to reset - still worth showing
+				costDepletionStr = costDepletion.Local().Format("3:04 PM")
 				costStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
 			} else {
+				// Well after reset - prediction is meaningless
+				costDepletionStr = "N/A"
 				costStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
 			}
 		} else {
@@ -860,12 +867,14 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 						costStyle = lipgloss.NewStyle().Foreground(ColorWarning)
 					}
 				} else {
-					// Cost depletion is after reset time - you're safe (green)
+					// Cost depletion is after reset time - limits will reset before we hit them
 					timeAfterReset := costDepletion.Sub(resetTime)
 					if timeAfterReset <= 30*time.Minute {
+						// Close enough to reset that it's still worth showing
 						costStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
 					} else {
-						costStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
+						// Well after reset - prediction is meaningless, don't show it
+						hasCostPrediction = false
 					}
 				}
 			}
