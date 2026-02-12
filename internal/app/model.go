@@ -34,6 +34,7 @@ type AppModel struct {
 	oauthDisableReason string    // Reason OAuth was disabled (for UI display)
 	oauthErrorLogged   bool      // Whether we've already logged the OAuth error
 	forceRefresh       bool      // Force next refresh to bypass cache (after wake/focus)
+	tickGeneration     uint64    // Incremented on resume to kill stale tick chains
 	width              int
 	height             int
 

@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sammcj/ccu/internal/app"
@@ -44,8 +46,19 @@ func main() {
 	// Create Bubbletea program
 	p := tea.NewProgram(
 		model,
-		tea.WithAltScreen(), // Use alternate screen buffer
+		tea.WithAltScreen(),     // Use alternate screen buffer
+		tea.WithReportFocus(),   // Get focus/blur events (triggers refresh on terminal focus)
 	)
+
+	// Listen for SIGCONT (process resumed after suspension/sleep) and inject
+	// a resume message into the Bubbletea program to force a data refresh
+	sigCont := make(chan os.Signal, 1)
+	signal.Notify(sigCont, syscall.SIGCONT)
+	go func() {
+		for range sigCont {
+			p.Send(app.ResumeMsg())
+		}
+	}()
 
 	// Run the program
 	if _, err := p.Run(); err != nil {

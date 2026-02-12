@@ -26,7 +26,11 @@ func init() {
 }
 
 // Messages
-type tickMsg time.Time
+type tickMsg struct {
+	time       time.Time
+	generation uint64 // Tick chain generation - stale generations are ignored
+}
+type resumeMsg struct{} // Sent when process resumes from suspension (SIGCONT)
 type dataLoadedMsg struct {
 	entries        []models.UsageEntry
 	oauthData      *oauth.UsageData
@@ -42,7 +46,7 @@ func (m AppModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		loadDataCmd(m.config),
-		tickCmd(m.config.RefreshRate),
+		tickCmd(m.config.RefreshRate, m.tickGeneration),
 	)
 }
 
@@ -81,8 +85,33 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// After clearing, just return to trigger a redraw
 		return m, nil
 
+	case tea.FocusMsg:
+		// Terminal regained focus - likely user returned after sleep/switching apps
+		// Increment tick generation to kill any stale tick chains, then start a fresh one
+		m.tickGeneration++
+		m.SetForceRefresh(true)
+		return m, tea.Batch(
+			loadDataCmdWithModel(m.config, &m),
+			tickCmd(m.config.RefreshRate, m.tickGeneration),
+		)
+
+	case resumeMsg:
+		// Process resumed from suspension (SIGCONT) - likely woke from sleep
+		// Increment tick generation to kill any stale tick chains, then start a fresh one
+		m.tickGeneration++
+		m.SetForceRefresh(true)
+		return m, tea.Batch(
+			loadDataCmdWithModel(m.config, &m),
+			tickCmd(m.config.RefreshRate, m.tickGeneration),
+		)
+
 	case tickMsg:
-		now := time.Time(msg)
+		// Ignore ticks from stale generations (old chains that survived sleep/resume)
+		if msg.generation != m.tickGeneration {
+			return m, nil
+		}
+
+		now := msg.time
 		// Detect wall clock jump (system wake from sleep)
 		// If more time has passed than expected (2x refresh rate), force a fresh fetch
 		if !m.lastTickTime.IsZero() {
@@ -98,7 +127,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Refresh data periodically (with OAuth caching)
 		return m, tea.Batch(
 			loadDataCmdWithModel(m.config, &m),
-			tickCmd(m.config.RefreshRate),
+			tickCmd(m.config.RefreshRate, m.tickGeneration),
 		)
 
 	case dataLoadedMsg:
@@ -281,10 +310,15 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 	}
 }
 
-// tickCmd returns a command that ticks at the given interval
-func tickCmd(interval time.Duration) tea.Cmd {
+// ResumeMsg creates a resumeMsg for external callers (e.g. SIGCONT handler)
+func ResumeMsg() tea.Msg {
+	return resumeMsg{}
+}
+
+// tickCmd returns a command that ticks at the given interval with the current generation
+func tickCmd(interval time.Duration, generation uint64) tea.Cmd {
 	return tea.Tick(interval, func(t time.Time) tea.Msg {
-		return tickMsg(t)
+		return tickMsg{time: t, generation: generation}
 	})
 }
 
