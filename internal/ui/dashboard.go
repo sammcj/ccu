@@ -436,7 +436,7 @@ func renderTimeBeforeReset(session *models.SessionBlock, now time.Time, barWidth
 	)
 }
 
-// renderPrediction renders cost limit and reset time on a single line
+// renderPrediction renders session limit prediction and reset time on a single line
 func renderPrediction(session *models.SessionBlock, limits models.Limits, now time.Time) string {
 	// If session has expired, show stale data notice instead of misleading predictions
 	if session.EndTime.Before(now) {
@@ -515,7 +515,7 @@ func renderPrediction(session *models.SessionBlock, limits models.Limits, now ti
 
 	return fmt.Sprintf("🔮 %s [%s] [%s]%s",
 		purpleStyle.Render("Prediction:"),
-		costStyle.Render(fmt.Sprintf("Cost limited: %s", costDepletionStr)),
+		costStyle.Render(fmt.Sprintf("Session limit: %s", costDepletionStr)),
 		whiteStyle.Render(fmt.Sprintf("Resets: %s", resetStr)),
 		reminder,
 	)
@@ -885,7 +885,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	var sessionPart string
 	if hasCostPrediction {
 		sessionPart = fmt.Sprintf("[%s]",
-			costStyle.Render(fmt.Sprintf("Cost limited: %s", costDepletionStr)))
+			costStyle.Render(fmt.Sprintf("Session limit: %s", costDepletionStr)))
 	} else {
 		sessionPart = fmt.Sprintf("[%s]",
 			whiteStyle.Render(fmt.Sprintf("Resets: %s", resetTimeStr)))
@@ -921,7 +921,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 					weeklyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
 				}
 
-				weeklyStr = fmt.Sprintf("Weekly limited: %s", weeklyDepletionStr)
+				weeklyStr = fmt.Sprintf("Weekly limit: %s", weeklyDepletionStr)
 				showWeeklyPart = true
 			}
 			// Skip showing "Weekly: OK" or "Insufficient data" - only show problems

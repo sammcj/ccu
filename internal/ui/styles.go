@@ -121,7 +121,7 @@ var (
 //
 // PREDICTION:
 //   - "Prediction:" label             → ColorPrediction
-//   - "Cost limited at: X:XX PM"      → ColorDanger (before reset) / ColorPrimary (close) / ColorSuccess (safe)
+//   - "Session limit: X:XX PM"      → ColorDanger (before reset) / ColorPrimary (close) / ColorSuccess (safe)
 //   - "Resets at: X:XX PM"            → ColorWhite
 //
 // ============================================================================
