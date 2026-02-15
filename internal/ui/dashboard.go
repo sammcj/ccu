@@ -834,30 +834,33 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	var costStyle lipgloss.Style
 	hasCostPrediction := false
 
-	// Calculate cost depletion based on recent burn rate (passed in)
+	// Predict session depletion from OAuth utilisation rate (session average).
+	// This is more accurate than the CLI-derived cost burn rate because it uses
+	// the same data source that determines the session limit, avoiding the
+	// mismatch between instantaneous CLI burn rate and total (web + CLI) usage.
 	if session != nil && session.IsActive {
-		// Use OAuth percentage to calculate actual cost used (includes web + CLI)
-		// session.CostUSD only includes CLI activity, which can be misleading
-		costUsed := (utilisationPercent / 100.0) * limits.CostLimitUSD
-		costRemaining := limits.CostLimitUSD - costUsed
-		if costRemaining < 0 {
-			costRemaining = 0
-		}
-
-		if costRemaining <= 0 && utilisationPercent >= 100 {
-			// Already at or over the cost limit
+		if utilisationPercent >= 100 {
+			// Already at or over the session limit
 			hasCostPrediction = true
 			costDepletionStr = "NOW"
 			costStyle = lipgloss.NewStyle().Foreground(ColorDanger)
-		} else if costBurnRate > 0 && costRemaining > 0 {
-			costDepletion := analysis.PredictCostDepletion(costBurnRate, costRemaining, now)
-			if !costDepletion.IsZero() {
+		} else if utilisationPercent > 0 {
+			// Derive burn rate from OAuth utilisation over elapsed session time
+			sessionStart := resetTime.Add(-5 * time.Hour)
+			elapsedMinutes := now.Sub(sessionStart).Minutes()
+
+			if elapsedMinutes >= 1 {
+				utilisationRate := utilisationPercent / elapsedMinutes // % per minute
+				remainingPercent := 100.0 - utilisationPercent
+				minutesToDepletion := remainingPercent / utilisationRate
+				costDepletion := now.Add(time.Duration(minutesToDepletion * float64(time.Minute)))
+
 				hasCostPrediction = true
 				costDepletionStr = costDepletion.Local().Format("3:04 PM")
 
 				// Colour based on whether depletion is before or after reset
 				if costDepletion.Before(resetTime) {
-					// Cost depletion is BEFORE reset time - we'll hit limit before resetting (BAD)
+					// Depletion BEFORE reset - we'll hit limit before resetting (BAD)
 					timeUntilDepletion := costDepletion.Sub(now)
 					if timeUntilDepletion <= 10*time.Minute {
 						costStyle = lipgloss.NewStyle().Foreground(ColorDanger)
@@ -867,7 +870,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 						costStyle = lipgloss.NewStyle().Foreground(ColorWarning)
 					}
 				} else {
-					// Cost depletion is after reset time - limits will reset before we hit them
+					// Depletion after reset - limits will reset before we hit them
 					timeAfterReset := costDepletion.Sub(resetTime)
 					if timeAfterReset <= 30*time.Minute {
 						// Close enough to reset that it's still worth showing
