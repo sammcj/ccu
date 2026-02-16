@@ -13,7 +13,7 @@ A performant terminal dashboard for monitoring Claude Code usage, built in Go us
 - **Burn Rate Monitoring**: Dual burn rate display - tokens/minute and cost/hour with visual indicators
 - **Intelligent Predictions**: Cost depletion time with colour-coded warnings (red if before reset, orange if close, green if safe)
 - **Plan Support**: Pro, Max5, Max20
-- **Automatic Fallback**: Uses OAuth when available, falls back to local JSONL parsing
+- **Automatic Fallback**: Uses OAuth when available, falls back to JSONL with raw cost/message display (no percentages)
 - **Model Distribution**: See which models you're using per session (Sonnet, Opus, Haiku)
 
 ## Installation
@@ -104,24 +104,28 @@ claude login
 
 After re-authentication, CCU will automatically use OAuth data when available.
 
-#### 2. Local JSONL Files (Fallback)
+#### 2. Local JSONL Files (Degraded Fallback)
 
-If OAuth is unavailable, CCU reads from `~/.claude/projects/**/*.jsonl` files:
-- Token counts (input, output, cache creation, cache read)
-- Model information
-- Timestamps
-- Cost data
+If OAuth is unavailable, CCU reads from `~/.claude/projects/**/*.jsonl` files and shows a degraded view:
+- Raw session cost and message count (no progress bars or percentages)
+- Burn rate (tokens/min, $/hr) -- still accurate from local data
+- Session model distribution
+- Time before reset (estimated from session blocks)
 
-**Limitation**: JSONL files only contain CLI activity, not web browser usage from claude.ai.
+**Limitations**: JSONL files only contain CLI activity (no web usage). Usage percentages, weekly tracking, predictions, and limit warnings require OAuth. When OAuth fails due to a transient error, CCU automatically retries after 5 minutes.
 
 ### OAuth vs JSONL
 
-| Feature              | OAuth API    | JSONL Files |
-|----------------------|--------------|-------------|
-| Web + CLI tracking   | ✅ Yes        | ❌ CLI only  |
-| Exact reset times    | ✅ Yes        | ⚠️ Estimated |
-| Separate model usage | ✅ Yes        | ✅ Yes       |
-| Setup required       | Re-auth once | None        |
+| Feature              | OAuth API    | JSONL Fallback     |
+|----------------------|--------------|--------------------|
+| Web + CLI tracking   | ✅ Yes        | ❌ CLI only         |
+| Usage percentages    | ✅ Yes        | ❌ Not available    |
+| Weekly limits        | ✅ Yes        | ❌ Not available    |
+| Predictions/warnings | ✅ Yes        | ❌ Not available    |
+| Burn rates           | ✅ Yes        | ✅ Yes              |
+| Session distribution | ✅ Yes        | ✅ Yes              |
+| Exact reset times    | ✅ Yes        | ⚠️ Estimated        |
+| Setup required       | Re-auth once | None               |
 
 ### Session Blocks
 

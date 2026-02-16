@@ -41,12 +41,12 @@ func formatRow(emoji, label, bar, value, suffix string) string {
 
 // DashboardData contains all data needed to render the dashboard
 type DashboardData struct {
-	Config         *models.Config
-	Limits         models.Limits
-	CurrentSession *models.SessionBlock
-	AllSessions    []models.SessionBlock
-	WeeklyUsage    models.WeeklyUsage
-	OAuthData      *oauth.UsageData // Optional OAuth-fetched data
+	Config                 *models.Config
+	Limits                 models.Limits
+	CurrentSession         *models.SessionBlock
+	AllSessions            []models.SessionBlock
+	OAuthData              *oauth.UsageData // Optional OAuth-fetched data
+	OAuthUnavailableReason string           // Reason OAuth is unavailable (for fallback display)
 }
 
 // RenderDashboard renders the realtime dashboard in a single-column layout
@@ -60,14 +60,9 @@ func RenderDashboard(data DashboardData) string {
 
 	const barWidth = 45
 
-	// Weekly usage (if enabled)
-	if data.Config.ShowWeekly {
-		// Use OAuth for weekly if available, otherwise JSONL
-		if data.OAuthData != nil && (data.OAuthData.SevenDaySonnet != nil || data.OAuthData.SevenDayOpus != nil) {
-			output = append(output, renderWeeklyUsageFromOAuth(data.OAuthData, data.Limits, barWidth)...)
-		} else {
-			output = append(output, renderWeeklyUsageSingleColumn(data.WeeklyUsage, barWidth)...)
-		}
+	// Weekly usage (if enabled) -- OAuth-only, no JSONL fallback
+	if data.Config.ShowWeekly && data.OAuthData != nil && (data.OAuthData.SevenDaySonnet != nil || data.OAuthData.SevenDayOpus != nil) {
+		output = append(output, renderWeeklyUsageFromOAuth(data.OAuthData, data.Limits, barWidth)...)
 	}
 
 	// Calculate burn rates (tokens and cost)
@@ -92,105 +87,29 @@ func RenderDashboard(data DashboardData) string {
 	// Get session distribution for appending to session usage line
 	sessionDistribution := getSessionDistributionString(data.CurrentSession)
 
-	// If OAuth available, show OAuth-based session metrics
+	// If OAuth available, show OAuth-based session metrics; otherwise degraded fallback
 	if data.OAuthData != nil {
 		output = append(output, renderSessionMetricsFromOAuth(data.OAuthData, sessionDistribution, barWidth, now)...)
 	} else {
-		// Fall back to JSONL-based metrics
-		output = append(output, renderSessionCost(data.CurrentSession, data.Limits, barWidth))
-		output = append(output, renderSessionMessages(data.CurrentSession, data.Limits, barWidth, burnRate))
-		output = append(output, renderTimeBeforeReset(data.CurrentSession, now, barWidth))
-
-		// Show stale data notice if the session has expired
-		if data.CurrentSession.EndTime.Before(now) {
-			dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
-			output = append(output, dimStyle.Render("  (session data is from a previous session - run Claude Code to refresh)"))
-		}
+		output = append(output, renderSessionFallback(data.CurrentSession, sessionDistribution, now, data.OAuthUnavailableReason)...)
 	}
 
 	output = append(output, "") // Blank line before prediction
 
-	// Prediction (session + weekly combined on one line when OAuth available)
+	// Prediction -- OAuth-only
 	if data.OAuthData != nil {
-		// Show session cost depletion and weekly prediction on same line
 		output = append(output, renderPredictionWithOAuth(data.OAuthData, data.CurrentSession, costBurnRate, data.Limits, now, data.Config.ShowWeekly))
-	} else {
-		output = append(output, renderPrediction(data.CurrentSession, data.Limits, now))
 	}
 
-	// Add warning if limits are approaching
+	// Limit warnings -- OAuth-only
 	if data.OAuthData != nil {
 		warning := renderOAuthLimitWarning(data.OAuthData, now)
-		if warning != "" {
-			output = append(output, warning)
-		}
-	} else {
-		warning := renderSessionLimitWarning(data.CurrentSession, data.Limits)
 		if warning != "" {
 			output = append(output, warning)
 		}
 	}
 
 	return strings.Join(output, "\n")
-}
-
-// renderWeeklyUsageSingleColumn renders weekly usage bars for single-column layout
-func renderWeeklyUsageSingleColumn(weekly models.WeeklyUsage, barWidth int) []string {
-	var lines []string
-
-	// Sonnet usage
-	if weekly.SonnetLimit > 0 {
-		sonnetPercent := 0.0
-		if weekly.SonnetLimit > 0 {
-			sonnetPercent = (weekly.SonnetHours / weekly.SonnetLimit) * 100
-			if sonnetPercent > 100 {
-				sonnetPercent = 100
-			}
-		}
-		filled := int((sonnetPercent / 100) * float64(barWidth-2))
-		if filled > barWidth-2 {
-			filled = barWidth - 2
-		}
-		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
-		barStyle := lipgloss.NewStyle().Foreground(ColorWhite)
-		percentStyle := GetPercentageStyle(sonnetPercent)
-		sonnetLine := formatRow(
-			"🗓️",
-			"Weekly - Sonnet:",
-			barStyle.Render(bar),
-			percentStyle.Render(fmt.Sprintf("%.1f%%", sonnetPercent)),
-			fmt.Sprintf("%.1f / %.1f hrs", weekly.SonnetHours, weekly.SonnetLimit),
-		)
-		lines = append(lines, sonnetLine)
-	}
-
-	// Opus usage
-	if weekly.OpusLimit > 0 {
-		opusPercent := 0.0
-		if weekly.OpusLimit > 0 {
-			opusPercent = (weekly.OpusHours / weekly.OpusLimit) * 100
-			if opusPercent > 100 {
-				opusPercent = 100
-			}
-		}
-		filled := int((opusPercent / 100) * float64(barWidth-2))
-		if filled > barWidth-2 {
-			filled = barWidth - 2
-		}
-		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
-		barStyle := lipgloss.NewStyle().Foreground(ColorWhite)
-		percentStyle := GetPercentageStyle(opusPercent)
-		opusLine := formatRow(
-			"🗓️",
-			"Weekly - Opus:",
-			barStyle.Render(bar),
-			percentStyle.Render(fmt.Sprintf("%.1f%%", opusPercent)),
-			fmt.Sprintf("%.1f / %.1f hrs", weekly.OpusHours, weekly.OpusLimit),
-		)
-		lines = append(lines, opusLine)
-	}
-
-	return lines
 }
 
 // getSessionDistributionString returns just the distribution part without the label
@@ -292,20 +211,14 @@ func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, 
 	// First bar aligns with other bars, second starts where second column info starts
 	normalBarWidth := barWidth
 
-	tokenFilled := int((tokenPercent / 100) * float64(normalBarWidth-2))
-	if tokenFilled > normalBarWidth-2 {
-		tokenFilled = normalBarWidth - 2
-	}
+	tokenFilled := min(int((tokenPercent/100)*float64(normalBarWidth-2)), normalBarWidth-2)
 	if tokenFilled < 0 {
 		tokenFilled = 0
 	}
 	tokenBar := "[" + strings.Repeat("█", tokenFilled) + strings.Repeat("░", normalBarWidth-2-tokenFilled) + "]"
 	tokenStyle := GetPercentageStyle(tokenPercent)
 
-	costFilled := int((costPercent / 100) * float64(normalBarWidth-2))
-	if costFilled > normalBarWidth-2 {
-		costFilled = normalBarWidth - 2
-	}
+	costFilled := min(int((costPercent/100)*float64(normalBarWidth-2)), normalBarWidth-2)
 	if costFilled < 0 {
 		costFilled = 0
 	}
@@ -344,183 +257,6 @@ func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, 
 	return tokenLine + "\n" + costLine
 }
 
-// renderSessionCost renders the session cost bar
-func renderSessionCost(session *models.SessionBlock, limits models.Limits, barWidth int) string {
-	costPercent := 0.0
-	if limits.CostLimitUSD > 0 {
-		costPercent = (session.CostUSD / limits.CostLimitUSD) * 100
-		if costPercent > 100 {
-			costPercent = 100
-		}
-	}
-	costFilled := int((costPercent / 100) * float64(barWidth-2))
-	if costFilled > barWidth-2 {
-		costFilled = barWidth - 2
-	}
-	costBar := "[" + strings.Repeat("█", costFilled) + strings.Repeat("░", barWidth-2-costFilled) + "]"
-	// Use same green-to-red color for both bar and percentage
-	costStyle := GetPercentageStyle(costPercent)
-
-	return formatRow(
-		"💸",
-		"Session - Cost:",
-		costStyle.Render(costBar),
-		costStyle.Render(fmt.Sprintf("%.1f%%", costPercent)),
-		"",
-	)
-}
-
-// renderSessionMessages renders the session messages bar with burn rate on the same line
-func renderSessionMessages(session *models.SessionBlock, limits models.Limits, barWidth int, burnRate float64) string {
-	msgPercent := 0.0
-	if limits.MessageLimit > 0 {
-		msgPercent = (float64(session.MessageCount) / float64(limits.MessageLimit)) * 100
-		if msgPercent > 100 {
-			msgPercent = 100
-		}
-	}
-	msgFilled := int((msgPercent / 100) * float64(barWidth-2))
-	if msgFilled > barWidth-2 {
-		msgFilled = barWidth - 2
-	}
-	msgBar := "[" + strings.Repeat("█", msgFilled) + strings.Repeat("░", barWidth-2-msgFilled) + "]"
-	// Use same green-to-red color for both bar and percentage
-	msgStyle := GetPercentageStyle(msgPercent)
-
-	return formatRow(
-		"📊",
-		"Session - Messages:",
-		msgStyle.Render(msgBar),
-		msgStyle.Render(fmt.Sprintf("%.1f%%", msgPercent)),
-		fmt.Sprintf("🔥 Rate: %.1f tokens/min", burnRate),
-	)
-}
-
-// renderTimeBeforeReset renders time remaining bar with hours on the same line
-func renderTimeBeforeReset(session *models.SessionBlock, now time.Time, barWidth int) string {
-	remaining := session.RemainingDuration(now)
-	sessionDuration := 5.0 // 5 hours
-
-	// Calculate percentage remaining (inverted - starts at 100%, counts down to 0%)
-	percent := 0.0
-	if sessionDuration > 0 {
-		percent = (remaining.Hours() / sessionDuration) * 100
-		if percent < 0 {
-			percent = 0
-		}
-		if percent > 100 {
-			percent = 100
-		}
-	}
-
-	// Build progress bar that empties from right to left as time runs out
-	filled := int((percent / 100) * float64(barWidth-2))
-	if filled > barWidth-2 {
-		filled = barWidth - 2
-	}
-	if filled < 0 {
-		filled = 0
-	}
-	// Reverse: empty blocks on left, filled blocks on right (drains from right to left)
-	bar := "[" + strings.Repeat("░", barWidth-2-filled) + strings.Repeat("█", filled) + "]"
-	// For time remaining, use gold → green gradient (100% = gold/calm, 0% = green/ready to reset)
-	// Both bar and text use same colour: gold at start → green at reset
-	percentStyle := GetTimeRemainingStyle(percent)
-
-	return formatRow(
-		"⏱️",
-		"Time Before Reset:",
-		percentStyle.Render(bar),
-		percentStyle.Render(fmt.Sprintf("%.1f%%", percent)),
-		percentStyle.Render(fmt.Sprintf("⏱️  Remaining: %.1f / %.1f hours", remaining.Hours(), sessionDuration)),
-	)
-}
-
-// renderPrediction renders session limit prediction and reset time on a single line
-func renderPrediction(session *models.SessionBlock, limits models.Limits, now time.Time) string {
-	// If session has expired, show stale data notice instead of misleading predictions
-	if session.EndTime.Before(now) {
-		purpleStyle := lipgloss.NewStyle().Foreground(ColorPrediction)
-		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
-		return fmt.Sprintf("🔮 %s %s",
-			purpleStyle.Render("Prediction:"),
-			dimStyle.Render("Session ended - waiting for new activity or token refresh"),
-		)
-	}
-
-	costBurnRate := analysis.CalculateCostBurnRate(*session, now)
-	costRemaining := limits.CostLimitUSD - session.CostUSD
-	if costRemaining < 0 {
-		costRemaining = 0
-	}
-
-	var costDepletionStr string
-	var costDepletion time.Time
-	var costStyle lipgloss.Style
-
-	if session.IsActive && costRemaining <= 0 {
-		// Already at or over the cost limit
-		costDepletionStr = "NOW"
-		costStyle = lipgloss.NewStyle().Foreground(ColorDanger)
-	} else if session.IsActive && costBurnRate > 0 && costRemaining > 0 {
-		costDepletion = analysis.PredictCostDepletion(costBurnRate, costRemaining, now)
-		if !costDepletion.IsZero() {
-			if costDepletion.Before(session.EndTime) {
-				// Cost depletion before reset - will hit limit before resetting
-				costDepletionStr = costDepletion.Local().Format("3:04 PM")
-				timeUntilDepletion := costDepletion.Sub(now)
-				if timeUntilDepletion <= 10*time.Minute {
-					costStyle = lipgloss.NewStyle().Foreground(ColorDanger)
-				} else if timeUntilDepletion <= 30*time.Minute {
-					costStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
-				} else {
-					costStyle = lipgloss.NewStyle().Foreground(ColorWarning)
-				}
-			} else if costDepletion.Sub(session.EndTime) <= 30*time.Minute {
-				// Close to reset - still worth showing
-				costDepletionStr = costDepletion.Local().Format("3:04 PM")
-				costStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
-			} else {
-				// Well after reset - prediction is meaningless
-				costDepletionStr = "N/A"
-				costStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
-			}
-		} else {
-			costDepletionStr = "N/A"
-			costStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
-		}
-	} else {
-		costDepletionStr = "N/A"
-		costStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
-	}
-
-	// Reset time (white)
-	resetTime := session.EndTime.Local()
-	resetStr := resetTime.Format("3:04 PM")
-	whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
-	purpleStyle := lipgloss.NewStyle().Foreground(ColorPrediction)
-	pinkStyle := lipgloss.NewStyle().Foreground(ColorOpus) // Mellow pink
-
-	// Check if under 1 hour left and over 50% usage remaining (under 50% used)
-	timeUntilReset := session.EndTime.Sub(now)
-	usagePercent := 0.0
-	if limits.CostLimitUSD > 0 {
-		usagePercent = (session.CostUSD / limits.CostLimitUSD) * 100
-	}
-
-	reminder := ""
-	if timeUntilReset > 0 && timeUntilReset < time.Hour && usagePercent < 75 {
-		reminder = " " + pinkStyle.Render("✈️  Unused session utilisation expiring soon")
-	}
-
-	return fmt.Sprintf("🔮 %s [%s] [%s]%s",
-		purpleStyle.Render("Prediction:"),
-		costStyle.Render(fmt.Sprintf("Session limit: %s", costDepletionStr)),
-		whiteStyle.Render(fmt.Sprintf("Resets: %s", resetStr)),
-		reminder,
-	)
-}
-
 // Helper functions
 
 // formatModelNameSimple returns simplified model names for display.
@@ -542,8 +278,8 @@ func formatModelNameSimple(model string) string {
 	families := []string{"opus", "sonnet", "haiku"}
 	for _, family := range families {
 		if strings.Contains(name, family) {
-			idx := strings.Index(name, family)
-			afterFamily := strings.TrimPrefix(name[idx+len(family):], "-")
+			_, after, _ := strings.Cut(name, family)
+			afterFamily := strings.TrimPrefix(after, "-")
 
 			// Convert version dashes to dots (e.g., "4-5" -> "4.5")
 			version := strings.ReplaceAll(afterFamily, "-", ".")
@@ -569,30 +305,45 @@ func isNumeric(s string) bool {
 	return len(s) > 0
 }
 
-// renderSessionLimitWarning displays a prominent warning if session limits are approaching or critical
-func renderSessionLimitWarning(session *models.SessionBlock, limits models.Limits) string {
-	if session == nil {
-		return ""
+// renderSessionFallback renders degraded session info when OAuth is unavailable.
+// Shows raw cost, message count, time before reset, and session distribution
+// but no progress bars or percentages (those require OAuth for accurate limits).
+func renderSessionFallback(session *models.SessionBlock, sessionDistribution string, now time.Time, oauthReason string) []string {
+	var lines []string
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+	whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
+
+	// Raw cost and message count
+	costStr := fmt.Sprintf("$%.2f", session.CostUSD)
+	msgStr := fmt.Sprintf("%d messages", session.MessageCount)
+	distStr := ""
+	if sessionDistribution != "" {
+		distStr = " " + sessionDistribution
+	}
+	lines = append(lines, fmt.Sprintf("  💸 Session: %s | %s%s",
+		whiteStyle.Render(costStr),
+		whiteStyle.Render(msgStr),
+		distStr,
+	))
+
+	// Time before reset (still computable from JSONL session blocks)
+	remaining := session.RemainingDuration(now)
+	if remaining > 0 {
+		lines = append(lines, fmt.Sprintf("  ⏱️  Time before reset: %s",
+			whiteStyle.Render(fmt.Sprintf("%.1f hours remaining", remaining.Hours())),
+		))
+	} else if session.EndTime.Before(now) {
+		lines = append(lines, dimStyle.Render("  (session data is from a previous session - run Claude Code to refresh)"))
 	}
 
-	// Don't show warnings for expired sessions - the data is from a past session
-	if session.EndTime.Before(time.Now()) {
-		return ""
+	// OAuth unavailable notice
+	notice := "OAuth unavailable - usage percentages unavailable"
+	if oauthReason != "" {
+		notice = fmt.Sprintf("OAuth unavailable: %s", oauthReason)
 	}
+	lines = append(lines, dimStyle.Render(fmt.Sprintf("  (%s)", notice)))
 
-	percent, limitType := analysis.GetSessionLimitStatus(session, limits)
-
-	if percent > 95 {
-		// Critical warning (>95%)
-		warningText := fmt.Sprintf("🚨 CRITICAL: Session %s limit at %.1f%%!", limitType, percent)
-		return CriticalStyle.Render(warningText)
-	} else if percent > 85 {
-		// Warning (>85%)
-		warningText := fmt.Sprintf("⚠️ WARNING: Session %s limit at %.1f%%", limitType, percent)
-		return WarningStyle.Render(warningText)
-	}
-
-	return ""
+	return lines
 }
 
 // renderWeeklyUsageFromOAuth renders weekly usage from OAuth data (matching JSONL style)
@@ -605,10 +356,7 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 	// Combined "All models" weekly limit (always present in API response)
 	{
 		allModelsPercent := oauthData.SevenDay.Utilisation
-		filled := int((allModelsPercent / 100) * float64(barWidth-2))
-		if filled > barWidth-2 {
-			filled = barWidth - 2
-		}
+		filled := min(int((allModelsPercent/100)*float64(barWidth-2)), barWidth-2)
 		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
 
 		// Parse reset time
@@ -639,10 +387,7 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 	if oauthData.SevenDaySonnet != nil {
 		sonnetPercent := oauthData.SevenDaySonnet.Utilisation
 		// Convert to filled bar amount
-		filled := int((sonnetPercent / 100) * float64(barWidth-2))
-		if filled > barWidth-2 {
-			filled = barWidth - 2
-		}
+		filled := min(int((sonnetPercent/100)*float64(barWidth-2)), barWidth-2)
 		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
 
 		limitHours := weeklyLimits.SonnetHours
@@ -669,10 +414,7 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 	// This auto-detects when Anthropic enables Opus weekly limits without requiring code changes
 	if oauthData.SevenDayOpus != nil && oauthData.SevenDayOpus.ResetsAt != nil {
 		opusPercent := oauthData.SevenDayOpus.Utilisation
-		filled := int((opusPercent / 100) * float64(barWidth-2))
-		if filled > barWidth-2 {
-			filled = barWidth - 2
-		}
+		filled := min(int((opusPercent/100)*float64(barWidth-2)), barWidth-2)
 		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
 
 		// Use green-to-red gradient for both bar and percentage
@@ -740,10 +482,7 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 		}
 	}
 
-	filled := int((percent / 100) * float64(barWidth-2))
-	if filled > barWidth-2 {
-		filled = barWidth - 2
-	}
+	filled := min(int((percent/100)*float64(barWidth-2)), barWidth-2)
 	bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
 
 	// Use same green-to-red colour for both bar and percentage
@@ -776,10 +515,7 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 	}
 
 	// Build progress bar that empties from right to left as time runs out
-	timeFilled := int((remainingPercent / 100) * float64(barWidth-2))
-	if timeFilled > barWidth-2 {
-		timeFilled = barWidth - 2
-	}
+	timeFilled := min(int((remainingPercent/100)*float64(barWidth-2)), barWidth-2)
 	if timeFilled < 0 {
 		timeFilled = 0
 	}

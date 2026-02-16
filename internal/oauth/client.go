@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 )
@@ -92,13 +93,7 @@ func getKeychainCredentials() (*ClaudeAiOAuth, error) {
 	}
 
 	// Validate token has required scopes
-	hasProfileScope := false
-	for _, scope := range creds.ClaudeAiOAuth.Scopes {
-		if scope == "user:profile" {
-			hasProfileScope = true
-			break
-		}
-	}
+	hasProfileScope := slices.Contains(creds.ClaudeAiOAuth.Scopes, "user:profile")
 
 	if !hasProfileScope {
 		return nil, fmt.Errorf("OAuth token lacks required 'user:profile' scope. Try re-authenticating: claude logout && claude login")
@@ -129,13 +124,13 @@ func (c *Client) FetchUsage() (*UsageData, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var errorBody map[string]interface{}
+		var errorBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errorBody)
 
 		// Check for token_expired error specifically
 		if resp.StatusCode == http.StatusUnauthorized {
-			if errMap, ok := errorBody["error"].(map[string]interface{}); ok {
-				if details, ok := errMap["details"].(map[string]interface{}); ok {
+			if errMap, ok := errorBody["error"].(map[string]any); ok {
+				if details, ok := errMap["details"].(map[string]any); ok {
 					if code, ok := details["error_code"].(string); ok && code == "token_expired" {
 						return nil, ErrTokenExpired
 					}

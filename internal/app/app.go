@@ -147,6 +147,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Store OAuth data if available
 		if msg.oauthData != nil {
+			// If OAuth was previously disabled but we got data, it recovered
+			if m.IsOAuthDisabled() {
+				log.Printf("OAuth recovered successfully")
+				m.ReenableOAuth()
+			}
 			m.SetOAuthData(msg.oauthData)
 			// Only update timestamps when we fetched fresh data (not from cache)
 			// This ensures the 15-minute weekly refresh check works correctly
@@ -163,11 +168,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sessions = analysis.MarkActiveSessions(sessions, now)
 		sessions = analysis.UpdateSessionCosts(sessions)
 
-		// Calculate weekly usage using pre-computed session blocks
-		weekly := analysis.CalculateWeeklyUsage(sessions, m.config.Plan, now)
-
 		// Update model
-		m.SetData(msg.entries, sessions, weekly)
+		m.SetData(msg.entries, sessions)
 
 		return m, nil
 
@@ -211,12 +213,12 @@ func (m AppModel) View() string {
 	default:
 		// Create dashboard data
 		data := ui.DashboardData{
-			Config:         m.config,
-			Limits:         m.limits,
-			CurrentSession: m.currentSession,
-			AllSessions:    m.sessions,
-			WeeklyUsage:    m.weeklyUsage,
-			OAuthData:      m.oauthData,
+			Config:                m.config,
+			Limits:                m.limits,
+			CurrentSession:        m.currentSession,
+			AllSessions:           m.sessions,
+			OAuthData:             m.oauthData,
+			OAuthUnavailableReason: m.oauthDisableReason,
 		}
 		content = ui.RenderDashboard(data)
 	}
@@ -255,6 +257,12 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 		// 4. OR the cached OAuth data has a stale session (reset time already passed)
 		// 5. OR forceRefresh is set (wake from sleep, terminal focus regained)
 		// 6. OR weekly data hasn't been refreshed in 15 minutes (safety net for guaranteed weekly updates)
+		// Check if OAuth should be retried after being disabled
+		if model != nil && model.ShouldRetryOAuth() {
+			model.ReenableOAuth()
+			log.Printf("OAuth re-enabled after cooldown period, retrying")
+		}
+
 		oauthNotDisabled := model == nil || !model.IsOAuthDisabled()
 		// Weekly refresh safety net: ensure OAuth is fetched at least every 15 minutes for weekly data
 		weeklyRefreshNeeded := model != nil && !model.GetLastWeeklyFetch().IsZero() && time.Since(model.GetLastWeeklyFetch()) >= 15*time.Minute

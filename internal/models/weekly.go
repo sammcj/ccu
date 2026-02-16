@@ -1,30 +1,5 @@
 package models
 
-import "time"
-
-// WeeklyUsage tracks 7-day rolling consumption
-type WeeklyUsage struct {
-	StartDate time.Time
-	EndDate   time.Time
-
-	// Token consumption
-	TotalTokens  int
-	SonnetTokens int
-	OpusTokens   int
-
-	// Estimated hours
-	SonnetHours float64
-	OpusHours   float64
-
-	// Limits for current plan
-	SonnetLimit float64
-	OpusLimit   float64
-
-	// Progress
-	SonnetPercent float64 // 0-100
-	OpusPercent   float64 // 0-100
-}
-
 // WeeklyLimits defines weekly limits by plan
 type WeeklyLimits struct {
 	SonnetHours float64
@@ -58,27 +33,3 @@ func GetWeeklyLimits(plan string) WeeklyLimits {
 	return PredefinedWeeklyLimits["pro"]
 }
 
-// GetTokensPerHour returns plan-specific token rates for hour estimation
-// These are estimates based on typical usage patterns, not hard limits
-func GetTokensPerHour(plan string) (sonnet, opus float64) {
-	// Base estimates on session limits divided by session duration
-	limits := GetLimits(plan)
-	sessionHours := 5.0
-
-	// Estimate Sonnet rate from plan's token limit
-	// Use 60% of max throughput as average (accounting for thinking time, pauses, etc.)
-	sonnetRate := (float64(limits.TokenLimit) / sessionHours) * 0.6
-
-	// Opus is typically ~10x more expensive, so assume ~5x fewer tokens for same cost
-	opusRate := sonnetRate * 0.5
-
-	// Apply minimums to avoid division by zero
-	if sonnetRate < 1000 {
-		sonnetRate = 10000 // Fallback estimate
-	}
-	if opusRate < 500 {
-		opusRate = 5000 // Fallback estimate
-	}
-
-	return sonnetRate, opusRate
-}

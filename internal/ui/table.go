@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sammcj/ccu/internal/models"
@@ -231,22 +232,23 @@ func formatModels(models map[string]bool) string {
 	}
 
 	// Simple join
-	result := modelNames[0]
+	var result strings.Builder
+	result.WriteString(modelNames[0])
 	for i := 1; i < len(modelNames); i++ {
-		result += "/" + modelNames[i]
+		result.WriteString("/" + modelNames[i])
 	}
 
-	return result
+	return result.String()
 }
 
 // joinLines joins lines with newlines
 func joinLines(lines []string) string {
-	result := ""
+	var result strings.Builder
 	for i, line := range lines {
-		result += line
+		result.WriteString(line)
 		if i < len(lines)-1 {
-			result += "\n"
+			result.WriteString("\n")
 		}
 	}
-	return result
+	return result.String()
 }

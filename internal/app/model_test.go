@@ -437,6 +437,91 @@ func TestManualRefreshRateLimit(t *testing.T) {
 	}
 }
 
+func TestShouldRetryOAuth(t *testing.T) {
+	tests := []struct {
+		name          string
+		disabled      bool
+		disabledAt    time.Time
+		reason        string
+		expectRetry   bool
+	}{
+		{
+			name:        "not disabled returns false",
+			disabled:    false,
+			expectRetry: false,
+		},
+		{
+			name:        "recently disabled returns false",
+			disabled:    true,
+			disabledAt:  time.Now().Add(-2 * time.Minute),
+			reason:      "connection refused",
+			expectRetry: false,
+		},
+		{
+			name:        "disabled 5+ min ago returns true",
+			disabled:    true,
+			disabledAt:  time.Now().Add(-6 * time.Minute),
+			reason:      "connection refused",
+			expectRetry: true,
+		},
+		{
+			name:        "token expired never retries",
+			disabled:    true,
+			disabledAt:  time.Now().Add(-10 * time.Minute),
+			reason:      "token expired",
+			expectRetry: false,
+		},
+		{
+			name:        "re-authenticate never retries",
+			disabled:    true,
+			disabledAt:  time.Now().Add(-10 * time.Minute),
+			reason:      "please re-authenticate with claude login",
+			expectRetry: false,
+		},
+		{
+			name:        "disabled with zero time returns false",
+			disabled:    true,
+			disabledAt:  time.Time{},
+			reason:      "some error",
+			expectRetry: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := models.DefaultConfig()
+			model := NewModel(config)
+			model.oauthDisabled = tt.disabled
+			model.oauthDisabledAt = tt.disabledAt
+			model.oauthDisableReason = tt.reason
+
+			assert.Equal(t, tt.expectRetry, model.ShouldRetryOAuth())
+		})
+	}
+}
+
+func TestReenableOAuth(t *testing.T) {
+	config := models.DefaultConfig()
+	model := NewModel(config)
+
+	// Disable OAuth first
+	model.DisableOAuth("test error")
+	model.MarkOAuthErrorLogged()
+
+	assert.True(t, model.IsOAuthDisabled())
+	assert.Equal(t, "test error", model.GetOAuthDisableReason())
+	assert.True(t, model.HasLoggedOAuthError())
+	assert.False(t, model.oauthDisabledAt.IsZero())
+
+	// Re-enable
+	model.ReenableOAuth()
+
+	assert.False(t, model.IsOAuthDisabled())
+	assert.Empty(t, model.GetOAuthDisableReason())
+	assert.False(t, model.HasLoggedOAuthError())
+	assert.True(t, model.oauthDisabledAt.IsZero())
+}
+
 func TestRateLimitWarning(t *testing.T) {
 	config := models.DefaultConfig()
 	model := NewModel(config)

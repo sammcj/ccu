@@ -27,7 +27,12 @@ DO NOT confuse these - they serve different purposes.
 - "claude-3-5-sonnet-20241022" → "sonnet"
 - "claude-opus-4-20250514" → "opus"
 
-Weekly tracking uses `isSonnetModel()` and `isOpusModel()` helpers in `internal/analysis/weekly.go`.
+**Session/weekly percentages are OAuth-only**: When OAuth is unavailable, the UI shows a degraded
+fallback with raw cost and message count but no progress bars or percentages. JSONL data cannot
+produce accurate percentages because the hardcoded plan limits don't match Anthropic's actual limits.
+
+**OAuth retry**: When OAuth is disabled due to a non-permanent error, it automatically retries after
+5 minutes. Errors requiring user action (token expired, re-authenticate) do not auto-retry.
 
 **Time handling**: All times converted to UTC. Session blocks round start times DOWN to current hour.
 

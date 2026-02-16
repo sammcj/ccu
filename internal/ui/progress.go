@@ -23,10 +23,7 @@ func RenderProgressBar(current, total int, width int, label string) string {
 
 	// Calculate filled portion
 	barWidth := width - 2 // Account for brackets
-	filled := int((percent / 100) * float64(barWidth))
-	if filled > barWidth {
-		filled = barWidth
-	}
+	filled := min(int((percent/100)*float64(barWidth)), barWidth)
 
 	// Build bar
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
@@ -58,10 +55,7 @@ func RenderProgressBarNeutral(current, total int, width int, label string) strin
 
 	// Calculate filled portion
 	barWidth := width - 2 // Account for brackets
-	filled := int((percent / 100) * float64(barWidth))
-	if filled > barWidth {
-		filled = barWidth
-	}
+	filled := min(int((percent/100)*float64(barWidth)), barWidth)
 
 	// Build bar
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
@@ -93,10 +87,7 @@ func RenderProgressBarWithValues(current, total int, width int, label, unit stri
 
 	// Calculate filled portion
 	barWidth := width - 2
-	filled := int((percent / 100) * float64(barWidth))
-	if filled > barWidth {
-		filled = barWidth
-	}
+	filled := min(int((percent/100)*float64(barWidth)), barWidth)
 
 	// Build bar
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
@@ -131,10 +122,7 @@ func RenderFloatProgressBar(current, total float64, width int, label, unit strin
 
 	// Calculate filled portion
 	barWidth := width - 2
-	filled := int((percent / 100) * float64(barWidth))
-	if filled > barWidth {
-		filled = barWidth
-	}
+	filled := min(int((percent/100)*float64(barWidth)), barWidth)
 
 	// Build bar
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)

@@ -8,9 +8,9 @@ import (
 
 // P90Config holds configuration for P90 calculation
 type P90Config struct {
-	CommonLimits     []int
-	LimitThreshold   float64
-	DefaultMinLimit  int
+	CommonLimits    []int
+	LimitThreshold  float64
+	DefaultMinLimit int
 }
 
 // DefaultP90Config returns the default P90 configuration
@@ -81,10 +81,7 @@ func quantile(data []int, q float64) int {
 	sort.Ints(sorted)
 
 	// Calculate index
-	index := int(float64(len(sorted)-1) * q)
-	if index < 0 {
-		index = 0
-	}
+	index := max(int(float64(len(sorted)-1)*q), 0)
 	if index >= len(sorted) {
 		index = len(sorted) - 1
 	}

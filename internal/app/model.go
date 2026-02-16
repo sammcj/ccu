@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -16,7 +17,6 @@ type AppModel struct {
 	// Data
 	entries        []models.UsageEntry
 	sessions       []models.SessionBlock
-	weeklyUsage    models.WeeklyUsage
 	currentSession *models.SessionBlock
 	limits         models.Limits
 	oauthData      *oauth.UsageData // OAuth-fetched usage data
@@ -32,6 +32,7 @@ type AppModel struct {
 	oauthEnabled       bool      // Whether OAuth is available
 	oauthDisabled      bool      // Whether OAuth has been disabled due to permanent error
 	oauthDisableReason string    // Reason OAuth was disabled (for UI display)
+	oauthDisabledAt    time.Time // When OAuth was disabled (for retry logic)
 	oauthErrorLogged   bool      // Whether we've already logged the OAuth error
 	forceRefresh       bool      // Force next refresh to bypass cache (after wake/focus)
 	tickGeneration     uint64    // Incremented on resume to kill stale tick chains
@@ -94,10 +95,9 @@ func (m *AppModel) SetError(err error) {
 }
 
 // SetData updates the model with new data
-func (m *AppModel) SetData(entries []models.UsageEntry, sessions []models.SessionBlock, weekly models.WeeklyUsage) {
+func (m *AppModel) SetData(entries []models.UsageEntry, sessions []models.SessionBlock) {
 	m.entries = entries
 	m.sessions = sessions
-	m.weeklyUsage = weekly
 	m.lastRefresh = time.Now()
 	m.loading = false
 
@@ -150,11 +150,6 @@ func (m *AppModel) GetCurrentSession() *models.SessionBlock {
 	return m.currentSession
 }
 
-// GetWeeklyUsage returns the weekly usage data
-func (m *AppModel) GetWeeklyUsage() models.WeeklyUsage {
-	return m.weeklyUsage
-}
-
 // GetLimits returns the current plan limits
 func (m *AppModel) GetLimits() models.Limits {
 	return m.limits
@@ -189,6 +184,7 @@ func (m *AppModel) HasOAuthData() bool {
 func (m *AppModel) DisableOAuth(reason string) {
 	m.oauthDisabled = true
 	m.oauthDisableReason = reason
+	m.oauthDisabledAt = time.Now()
 	m.oauthData = nil // Clear stale cached data so JSONL fallback is used
 }
 
@@ -210,6 +206,34 @@ func (m *AppModel) MarkOAuthErrorLogged() {
 // HasLoggedOAuthError returns true if we've already logged the OAuth error
 func (m *AppModel) HasLoggedOAuthError() bool {
 	return m.oauthErrorLogged
+}
+
+// ReenableOAuth clears OAuth disabled state to allow retry
+func (m *AppModel) ReenableOAuth() {
+	m.oauthDisabled = false
+	m.oauthDisableReason = ""
+	m.oauthDisabledAt = time.Time{}
+	m.oauthErrorLogged = false
+}
+
+// ShouldRetryOAuth returns true if OAuth has been disabled long enough to retry.
+// Returns false for errors that require user action (token expired, re-authenticate).
+func (m *AppModel) ShouldRetryOAuth() bool {
+	if !m.oauthDisabled {
+		return false
+	}
+	if m.oauthDisabledAt.IsZero() {
+		return false
+	}
+
+	// Don't retry errors that require user intervention
+	reason := strings.ToLower(m.oauthDisableReason)
+	if strings.Contains(reason, "token expired") || strings.Contains(reason, "re-authenticate") {
+		return false
+	}
+
+	// Retry after 5 minutes
+	return time.Since(m.oauthDisabledAt) >= 5*time.Minute
 }
 
 // SetZeroRemainingStart marks when remaining time first hit 0
@@ -270,10 +294,11 @@ func (m *AppModel) CheckManualRefreshRateLimit() (bool, time.Duration) {
 	// Calculate required interval based on backoff level
 	// Level increases every 2 requests: 1s, 1s, 2s, 2s, 4s, 4s, 8s, 8s...
 	level := m.manualRefreshCount / 2
-	requiredInterval := time.Second * time.Duration(1<<level) // 2^level seconds
-	if requiredInterval > 60*time.Second {
-		requiredInterval = 60 * time.Second // Cap at 60s
-	}
+	requiredInterval := min(
+		// 2^level seconds
+		time.Second*time.Duration(1<<level),
+		// Cap at 60s
+		60*time.Second)
 
 	// Check if enough time has passed
 	if !m.lastManualRefresh.IsZero() {
