@@ -2,6 +2,15 @@ package models
 
 import "time"
 
+// APIConfig holds configuration for the optional embedded HTTP API server
+type APIConfig struct {
+	Enabled      bool
+	Port         int      // default 19840
+	BindAddr     string   // default "0.0.0.0"
+	Token        string   // shared secret; empty = no auth
+	AllowedCIDRs []string // e.g. ["192.168.0.0/24", "10.0.0.1/32"]; empty = allow all
+}
+
 // Config holds application configuration
 type Config struct {
 	// Data paths
@@ -25,6 +34,9 @@ type Config struct {
 
 	// Report mode (non-interactive output to stdout)
 	ReportMode ReportMode
+
+	// API server configuration
+	API APIConfig
 }
 
 // ViewMode represents the display mode
@@ -69,6 +81,10 @@ func DefaultConfig() *Config {
 		CustomToken:    0,
 		CustomCost:     0,
 		CustomMessages: 0,
+		API: APIConfig{
+			Port:     19840,
+			BindAddr: "0.0.0.0",
+		},
 	}
 }
 

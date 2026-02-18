@@ -132,7 +132,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 	tzName := timezone.String()
 
 	// Header
-	sb.WriteString(fmt.Sprintf("Claude Code Token Usage Report - %s (%s)\n", periodType, tzName))
+	fmt.Fprintf(&sb, "Claude Code Token Usage Report - %s (%s)\n", periodType, tzName)
 	sb.WriteString(strings.Repeat("─", 140) + "\n")
 
 	// Column headers - use wider model column for full names
@@ -149,8 +149,8 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 		periodLabel = "Date"
 		periodWidth = 12
 	}
-	sb.WriteString(fmt.Sprintf("%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
-		periodWidth, periodLabel, "Model", "Input", "Output", "Cache Create", "Cache Read", "Total Tokens", "Est. Cost"))
+	fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
+		periodWidth, periodLabel, "Model", "Input", "Output", "Cache Create", "Cache Read", "Total Tokens", "Est. Cost")
 	sb.WriteString(strings.Repeat("─", 140) + "\n")
 
 	// Grand totals
@@ -209,7 +209,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 				displayPeriod = periodStr
 			}
 
-			sb.WriteString(fmt.Sprintf("%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
+			fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
 				periodWidth,
 				displayPeriod,
 				truncate(modelName, 30),
@@ -218,7 +218,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 				formatNumber(ms.CacheCreationTokens),
 				formatNumber(ms.CacheReadTokens),
 				formatNumber(ms.TotalTokens),
-				fmt.Sprintf("$%.2f", ms.TotalCost)))
+				fmt.Sprintf("$%.2f", ms.TotalCost))
 
 			// Accumulate grand totals
 			totalInput += ms.InputTokens
@@ -247,7 +247,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 				subtotalLabel = "Subtotal *"
 			}
 
-			sb.WriteString(fmt.Sprintf("%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
+			fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
 				periodWidth,
 				"",
 				subtotalLabel,
@@ -256,7 +256,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 				formatNumber(periodCacheCreate),
 				formatNumber(periodCacheRead),
 				formatNumber(periodTokens),
-				fmt.Sprintf("$%.2f", periodCost)))
+				fmt.Sprintf("$%.2f", periodCost))
 		}
 
 		// Add blank line between periods for readability
@@ -265,7 +265,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 
 	// Grand total row
 	sb.WriteString(strings.Repeat("─", 140) + "\n")
-	sb.WriteString(fmt.Sprintf("%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
+	fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
 		periodWidth,
 		"TOTAL", "",
 		formatNumber(totalInput),
@@ -273,14 +273,14 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 		formatNumber(totalCacheCreate),
 		formatNumber(totalCacheRead),
 		formatNumber(totalTokens),
-		fmt.Sprintf("$%.2f", totalCost)))
+		fmt.Sprintf("$%.2f", totalCost))
 
 	// Footer
 	sb.WriteString("\n")
 	if hasPartialPeriod {
 		sb.WriteString("* Partial period (current month/week/day)\n")
 	}
-	sb.WriteString(fmt.Sprintf("Pricing: %s\n", pricing.GetPricingSource()))
+	fmt.Fprintf(&sb, "Pricing: %s\n", pricing.GetPricingSource())
 
 	return sb.String()
 }

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sammcj/ccu/internal/api"
 	"github.com/sammcj/ccu/internal/app"
 	"github.com/sammcj/ccu/internal/config"
 	"github.com/sammcj/ccu/internal/data"
@@ -42,6 +45,19 @@ func main() {
 
 	// Create application model
 	model := app.NewModel(cfg)
+
+	// Start optional API server
+	if cfg.API.Enabled {
+		apiServer := api.New(cfg.API)
+		model.SetAPIServer(apiServer)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			if err := apiServer.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				fmt.Fprintf(os.Stderr, "API server error: %v\n", err)
+			}
+		}()
+	}
 
 	// Create Bubbletea program
 	p := tea.NewProgram(

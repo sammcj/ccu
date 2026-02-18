@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sammcj/ccu/internal/analysis"
+	"github.com/sammcj/ccu/internal/api"
 	"github.com/sammcj/ccu/internal/data"
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/oauth"
@@ -170,6 +171,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Update model
 		m.SetData(msg.entries, sessions)
+
+		// Push a fresh snapshot to the API server (if running)
+		if m.apiServer != nil {
+			if snapshot, err := api.BuildStatusResponse(&m, now); err == nil {
+				m.apiServer.UpdateSnapshot(snapshot)
+			} else {
+				log.Printf("api: failed to build snapshot: %v", err)
+			}
+		}
 
 		return m, nil
 

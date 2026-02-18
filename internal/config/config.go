@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sammcj/ccu/internal/models"
+	"github.com/sammcj/ccu/internal/oauth"
 )
 
 // Version information (set by main package)
@@ -35,6 +38,13 @@ func ParseFlags() (*models.Config, error) {
 	showHelp := flag.Bool("help", false, "Show help message")
 	showVersion := flag.Bool("version", false, "Show version information")
 
+	// API server flags
+	apiEnabled := flag.Bool("api", false, "Enable embedded HTTP API server")
+	apiPort := flag.Int("api-port", 19840, "API server listen port")
+	apiBind := flag.String("api-bind", "0.0.0.0", "API server bind address")
+	apiToken := flag.String("api-token", "", "API bearer token (empty = no auth)")
+	apiAllow := flag.String("api-allow", "", "Comma-separated CIDR ranges to allowlist (empty = allow all)")
+
 	flag.Parse()
 
 	// Handle help
@@ -58,6 +68,20 @@ func ParseFlags() (*models.Config, error) {
 			return nil, fmt.Errorf("getting home directory: %w", err)
 		}
 		config.DataPath = filepath.Join(homeDir, ".claude", "projects")
+	}
+
+	// Auto-detect plan from keychain when the user hasn't set it explicitly.
+	// flag.Visit only visits flags that were explicitly provided on the command line.
+	planExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "plan" {
+			planExplicit = true
+		}
+	})
+	if !planExplicit {
+		if detected := oauth.DetectPlan(); detected != "" {
+			*plan = detected
+		}
 	}
 
 	// Validate and set plan
@@ -130,7 +154,76 @@ func ParseFlags() (*models.Config, error) {
 	// Set weekly flag
 	config.ShowWeekly = *showWeekly
 
+	// API server configuration (precedence: CLI flag > env var > token file)
+	config.API.Enabled = *apiEnabled
+	if !config.API.Enabled {
+		if v := os.Getenv("CCU_API"); v == "true" || v == "1" {
+		config.API.Enabled = true
+	} else if v := os.Getenv("CCU_ENABLE_API"); v == "true" || v == "1" {
+			config.API.Enabled = true
+		}
+	}
+
+	if *apiPort != 19840 {
+		config.API.Port = *apiPort
+	} else if v := os.Getenv("CCU_API_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			config.API.Port = p
+		}
+	} else {
+		config.API.Port = *apiPort
+	}
+
+	if *apiBind != "0.0.0.0" {
+		config.API.BindAddr = *apiBind
+	} else if v := os.Getenv("CCU_API_BIND"); v != "" {
+		config.API.BindAddr = v
+	} else {
+		config.API.BindAddr = *apiBind
+	}
+
+	if *apiToken != "" {
+		config.API.Token = *apiToken
+	} else if v := os.Getenv("CCU_API_TOKEN"); v != "" {
+		config.API.Token = v
+	} else {
+		// Token file fallback
+		config.API.Token = readTokenFile()
+	}
+
+	if *apiAllow != "" {
+		config.API.AllowedCIDRs = parseCIDRList(*apiAllow)
+	} else if v := os.Getenv("CCU_API_ALLOW"); v != "" {
+		config.API.AllowedCIDRs = parseCIDRList(v)
+	}
+
 	return config, nil
+}
+
+// readTokenFile reads a bearer token from $HOME/.ccu/.api_token if present.
+func readTokenFile() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(homeDir, ".ccu", ".api_token"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// parseCIDRList splits a comma-separated string of CIDR ranges into a slice.
+func parseCIDRList(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // printHelp prints help message
@@ -157,6 +250,9 @@ func printHelp() {
 	fmt.Println("  ccu -refresh=10                        # Refresh every 10 seconds")
 	fmt.Println("  ccu -hours=48                          # Load last 48 hours of data")
 	fmt.Println("  ccu -plan=custom -custom-tokens=50000  # Use custom token limit")
+	fmt.Println("  ccu -api -api-port=19840               # Enable HTTP API server")
+	fmt.Println("  ccu -api -api-token=secret             # API server with bearer token auth")
+	fmt.Println("  ccu -api -api-allow=192.168.1.0/24     # API server with IP allowlist")
 	fmt.Println()
 }
 

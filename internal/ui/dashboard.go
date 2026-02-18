@@ -30,11 +30,11 @@ func formatRow(emoji, label, bar, value, suffix string) string {
 	var b strings.Builder
 	b.WriteString("\x1b[2K") // Clear entire line first
 	b.WriteString(emoji)
-	b.WriteString(fmt.Sprintf("\x1b[%dG%s", colPosLabel, label))
-	b.WriteString(fmt.Sprintf("\x1b[%dG%s", colPosBar, bar))
-	b.WriteString(fmt.Sprintf("\x1b[%dG%s", colPosValue, value))
+	fmt.Fprintf(&b, "\x1b[%dG%s", colPosLabel, label)
+	fmt.Fprintf(&b, "\x1b[%dG%s", colPosBar, bar)
+	fmt.Fprintf(&b, "\x1b[%dG%s", colPosValue, value)
 	if suffix != "" {
-		b.WriteString(fmt.Sprintf("\x1b[%dG%s", colPosSuffix, suffix))
+		fmt.Fprintf(&b, "\x1b[%dG%s", colPosSuffix, suffix)
 	}
 	return b.String()
 }

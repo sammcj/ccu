@@ -77,12 +77,107 @@ ccu -hours=48      # Last 48 hours
 - `-custom-cost` - Custom cost limit in USD (requires `-plan=custom`)
 - `-custom-messages` - Custom message limit (requires `-plan=custom`)
 - `-weekly` - Show weekly usage panel (default: `true`)
+- `-api` - Enable the embedded HTTP API server (default: `false`)
+- `-api-port` - API server port (default: `19840`)
+- `-api-bind` - API server bind address (default: `0.0.0.0`)
+- `-api-token` - Bearer token for API auth; empty means no auth
+- `-api-allow` - Comma-separated CIDR allowlist, e.g. `192.168.1.0/24,10.0.0.1/32`; empty means allow all
 - `-help` - Show help message
 - `-version` - Show version information
 
 ### Keyboard Controls
 
 - `q` or `Ctrl-C` - Exit the application
+
+## HTTP API
+
+CCU can expose its computed metrics over a local HTTP API. This is opt-in and disabled by default.
+
+The API is intended for local network consumers such as an ESP32 display or a home-automation system. It serves the same data the TUI displays — burn rates, session/weekly utilisation, depletion predictions — with no additional API calls to Anthropic.
+
+### Enabling
+
+```bash
+# Minimal: open to all local connections, no auth
+ccu -api
+
+# With bearer token auth
+ccu -api -api-token=mysecret
+
+# Restrict to a subnet
+ccu -api -api-allow=192.168.1.0/24
+
+# Combined: subnet + token, custom port
+ccu -api -api-port=8080 -api-allow=192.168.1.0/24 -api-token=mysecret
+```
+
+Environment variables are also supported (CLI flags take precedence):
+
+| Env var                                 | Equivalent flag |
+| --------------------------------------- | --------------- |
+| `CCU_API=true` or `CCU_ENABLE_API=true` | `-api`          |
+| `CCU_API_PORT=19840`                    | `-api-port`     |
+| `CCU_API_BIND=0.0.0.0`                  | `-api-bind`     |
+| `CCU_API_TOKEN=secret`                  | `-api-token`    |
+| `CCU_API_ALLOW=192.168.1.0/24`          | `-api-allow`    |
+
+A token file at `~/.ccu/.api_token` is read as a fallback when neither flag nor env var sets a token.
+
+### Endpoint
+
+`GET /api/status` returns a JSON snapshot updated on every data refresh (every 60 seconds when OAuth is active).
+
+```bash
+curl -s -H "Authorization: Bearer mysecret" http://localhost:19840/api/status | jq .
+```
+
+Example response (fields are omitted when data is unavailable):
+
+```json
+{
+  "plan": "max5",
+  "server_time": "2026-02-18T12:00:00Z",
+  "data_age_seconds": 15,
+  "weekly": {
+    "all_models": { "utilisation_pct": 30.5, "resets_at": "2026-02-25T00:00:00Z", "resets_in_seconds": 594000 },
+    "sonnet":     { "utilisation_pct": 25.0, "used_hours": 52.5, "limit_hours": 210, "resets_at": "...", "resets_in_seconds": 594000 }
+  },
+  "session": {
+    "utilisation_pct": 42.0,
+    "resets_at": "2026-02-18T15:00:00Z",
+    "resets_in_seconds": 10800,
+    "elapsed_seconds": 7200,
+    "total_seconds": 18000,
+    "remaining_seconds": 10800,
+    "remaining_pct": 60.0,
+    "cost_usd": 14.70,
+    "message_count": 312,
+    "model_distribution": [
+      { "model": "claude-sonnet-4", "cost_pct": 72.5 },
+      { "model": "claude-opus-4",   "cost_pct": 27.5 }
+    ]
+  },
+  "burn_rate": {
+    "tokens_per_min": 850.0,
+    "cost_per_min_usd": 0.048,
+    "cost_per_hour_usd": 2.88
+  },
+  "prediction": {
+    "session_limit_at": "2026-02-18T19:30:00Z",
+    "session_limit_in_seconds": 27000,
+    "session_will_hit_limit": false,
+    "weekly_will_hit_limit": false
+  }
+}
+```
+
+Returns `503` with `{"error":"no data"}` before the first data load completes.
+
+### Security
+
+- If both `-api-allow` and `-api-token` are unset, CCU logs a warning at startup. Only do this on a fully trusted, isolated network.
+- IP allowlist is checked before auth so the existence of an auth requirement is not leaked to blocked hosts.
+- `weekly` fields are only present when OAuth is active; they are omitted in JSONL-only mode.
 
 ## How It Works
 
@@ -116,16 +211,16 @@ If OAuth is unavailable, CCU reads from `~/.claude/projects/**/*.jsonl` files an
 
 ### OAuth vs JSONL
 
-| Feature              | OAuth API    | JSONL Fallback     |
-|----------------------|--------------|--------------------|
-| Web + CLI tracking   | ✅ Yes        | ❌ CLI only         |
-| Usage percentages    | ✅ Yes        | ❌ Not available    |
-| Weekly limits        | ✅ Yes        | ❌ Not available    |
-| Predictions/warnings | ✅ Yes        | ❌ Not available    |
-| Burn rates           | ✅ Yes        | ✅ Yes              |
-| Session distribution | ✅ Yes        | ✅ Yes              |
-| Exact reset times    | ✅ Yes        | ⚠️ Estimated        |
-| Setup required       | Re-auth once | None               |
+| Feature              | OAuth API    | JSONL Fallback  |
+| -------------------- | ------------ | --------------- |
+| Web + CLI tracking   | ✅ Yes        | ❌ CLI only      |
+| Usage percentages    | ✅ Yes        | ❌ Not available |
+| Weekly limits        | ✅ Yes        | ❌ Not available |
+| Predictions/warnings | ✅ Yes        | ❌ Not available |
+| Burn rates           | ✅ Yes        | ✅ Yes           |
+| Session distribution | ✅ Yes        | ✅ Yes           |
+| Exact reset times    | ✅ Yes        | ⚠️ Estimated     |
+| Setup required       | Re-auth once | None            |
 
 ### Session Blocks
 
@@ -206,6 +301,7 @@ To customise colours:
 ccu/
 ├── cmd/ccu/          # Entry point
 ├── internal/
+│   ├── api/          # Optional embedded HTTP API server
 │   ├── app/          # Bubbletea application (MVU pattern)
 │   ├── oauth/        # OAuth client for Anthropic API
 │   ├── data/         # JSONL reading and parsing (fallback)

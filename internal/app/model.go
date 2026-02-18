@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/sammcj/ccu/internal/api"
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/oauth"
 )
@@ -47,6 +48,9 @@ type AppModel struct {
 
 	// UI Components
 	spinner spinner.Model
+
+	// Optional API server
+	apiServer *api.Server
 }
 
 // NewModel creates a new application model
@@ -343,4 +347,19 @@ func (m *AppModel) ClearExpiredRateLimitWarning() {
 	if m.rateLimitWarning != "" && time.Now().After(m.rateLimitWarningExpiry) {
 		m.rateLimitWarning = ""
 	}
+}
+
+// SetAPIServer attaches an API server to the model so it can receive snapshots.
+func (m *AppModel) SetAPIServer(s *api.Server) {
+	m.apiServer = s
+}
+
+// GetAPIServer returns the attached API server, or nil if not set.
+func (m *AppModel) GetAPIServer() *api.Server {
+	return m.apiServer
+}
+
+// GetLastRefresh returns the time of the last successful data refresh.
+func (m *AppModel) GetLastRefresh() time.Time {
+	return m.lastRefresh
 }

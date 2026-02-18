@@ -26,6 +26,37 @@ type ClaudeAiOAuth struct {
 	ExpiresAt        int64    `json:"expiresAt"` // Unix timestamp in milliseconds
 	Scopes           []string `json:"scopes"`
 	SubscriptionType *string  `json:"subscriptionType"`
+	RateLimitTier    string   `json:"rateLimitTier"`
+}
+
+// DetectPlan returns the CCU plan name derived from keychain credentials.
+// rateLimitTier is checked first (e.g. "default_claude_max_5x") as it
+// distinguishes Max5 from Max20; subscriptionType is a coarser fallback.
+// Returns an empty string when the plan cannot be determined.
+func DetectPlan() string {
+	creds, err := getKeychainCredentials()
+	if err != nil {
+		return ""
+	}
+	return planFromCredentials(creds)
+}
+
+func planFromCredentials(creds *ClaudeAiOAuth) string {
+	switch strings.ToLower(creds.RateLimitTier) {
+	case "default_claude_max_5x":
+		return "max5"
+	case "default_claude_max_20x":
+		return "max20"
+	case "default_claude_pro":
+		return "pro"
+	}
+	if creds.SubscriptionType != nil {
+		switch strings.ToLower(*creds.SubscriptionType) {
+		case "pro":
+			return "pro"
+		}
+	}
+	return ""
 }
 
 // KeychainCredentials represents the full structure stored in macOS Keychain
