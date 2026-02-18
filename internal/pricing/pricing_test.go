@@ -25,7 +25,7 @@ func TestCalculateCost(t *testing.T) {
 			want: 0.0105,
 		},
 		{
-			name: "opus with cache",
+			name: "opus 4 legacy with cache",
 			entry: models.UsageEntry{
 				Timestamp:           time.Now(),
 				InputTokens:         1000,
@@ -37,6 +37,31 @@ func TestCalculateCost(t *testing.T) {
 			// (1000 * 15 / 1M) + (500 * 75 / 1M) + (200 * 18.75 / 1M) + (300 * 1.5 / 1M)
 			// = 0.015 + 0.0375 + 0.00375 + 0.00045 = 0.0567
 			want: 0.0567,
+		},
+		{
+			name: "opus 4.6 with cache",
+			entry: models.UsageEntry{
+				Timestamp:           time.Now(),
+				InputTokens:         1000,
+				OutputTokens:        500,
+				CacheCreationTokens: 200,
+				CacheReadTokens:     300,
+				Model:               "claude-opus-4-6",
+			},
+			// (1000 * 5 / 1M) + (500 * 25 / 1M) + (200 * 6.25 / 1M) + (300 * 0.5 / 1M)
+			// = 0.005 + 0.0125 + 0.00125 + 0.00015 = 0.0189
+			want: 0.0189,
+		},
+		{
+			name: "sonnet 4.6 basic usage",
+			entry: models.UsageEntry{
+				Timestamp:    time.Now(),
+				InputTokens:  1000,
+				OutputTokens: 500,
+				Model:        "claude-sonnet-4-6",
+			},
+			// (1000 * 3.00 / 1M) + (500 * 15.00 / 1M) = 0.003 + 0.0075 = 0.0105
+			want: 0.0105,
 		},
 	}
 

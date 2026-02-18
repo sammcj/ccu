@@ -44,17 +44,26 @@ func NormaliseModelName(model string) string {
 	modelLower := strings.ToLower(model)
 
 	// Map various model names to standard names
-	// Check for version-specific patterns first (4.5, then 3.5, then base versions)
+	// Check for version-specific patterns first (newest → oldest)
 	switch {
 	case strings.Contains(modelLower, "opus"):
+		if strings.Contains(modelLower, "4-6") || strings.Contains(modelLower, "4.6") {
+			return "claude-opus-4-6"
+		}
 		if strings.Contains(modelLower, "4-5") || strings.Contains(modelLower, "4.5") {
 			return "claude-opus-4-5"
+		}
+		if strings.Contains(modelLower, "4-1") || strings.Contains(modelLower, "4.1") {
+			return "claude-opus-4-1"
 		}
 		if strings.Contains(modelLower, "3") {
 			return "claude-3-opus"
 		}
 		return "claude-opus-4"
 	case strings.Contains(modelLower, "sonnet"):
+		if strings.Contains(modelLower, "4-6") || strings.Contains(modelLower, "4.6") {
+			return "claude-sonnet-4-6"
+		}
 		if strings.Contains(modelLower, "4-5") || strings.Contains(modelLower, "4.5") {
 			return "claude-sonnet-4-5"
 		}

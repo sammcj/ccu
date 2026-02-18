@@ -12,11 +12,23 @@ type Pricing struct {
 
 // ModelPricing contains pricing for all known models (per 1M tokens in USD)
 var ModelPricing = map[string]Pricing{
+	"claude-opus-4-6": {
+		Input:         5.00,
+		Output:        25.00,
+		CacheCreation: 6.25,
+		CacheRead:     0.50,
+	},
 	"claude-opus-4-5": {
 		Input:         5.00,
 		Output:        25.00,
 		CacheCreation: 6.25,
 		CacheRead:     0.50,
+	},
+	"claude-sonnet-4-6": {
+		Input:         3.00,
+		Output:        15.00,
+		CacheCreation: 3.75,
+		CacheRead:     0.30,
 	},
 	"claude-sonnet-4-5": {
 		Input:         3.00,
@@ -30,43 +42,49 @@ var ModelPricing = map[string]Pricing{
 		CacheCreation: 1.25,
 		CacheRead:     0.10,
 	},
-	"claude-opus-4": { // Legacy, should never be used as of October 2025
+	"claude-opus-4-1": {
 		Input:         15.00,
 		Output:        75.00,
 		CacheCreation: 18.75,
 		CacheRead:     1.50,
 	},
-	"claude-3-opus": { // Legacy, should never be used as of October 2025
+	"claude-opus-4": {
 		Input:         15.00,
 		Output:        75.00,
 		CacheCreation: 18.75,
 		CacheRead:     1.50,
 	},
-	"claude-3-sonnet": { // Legacy, should never be used as of October 2025
+	"claude-3-opus": {
+		Input:         15.00,
+		Output:        75.00,
+		CacheCreation: 18.75,
+		CacheRead:     1.50,
+	},
+	"claude-3-sonnet": {
 		Input:         3.00,
 		Output:        15.00,
 		CacheCreation: 3.75,
 		CacheRead:     0.30,
 	},
-	"claude-3-5-sonnet": { // Legacy, should never be used as of October 2025
+	"claude-3-5-sonnet": {
 		Input:         3.00,
 		Output:        15.00,
 		CacheCreation: 3.75,
 		CacheRead:     0.30,
 	},
-	"claude-sonnet-4": { // Legacy, should never be used as of October 2025
+	"claude-sonnet-4": {
 		Input:         3.00,
 		Output:        15.00,
 		CacheCreation: 3.75,
 		CacheRead:     0.30,
 	},
-	"claude-3-haiku": { // Legacy, should never be used as of October 2025
+	"claude-3-haiku": {
 		Input:         0.25,
 		Output:        1.25,
 		CacheCreation: 0.30,
 		CacheRead:     0.03,
 	},
-	"claude-3-5-haiku": { // Legacy, should never be used as of October 2025
+	"claude-3-5-haiku": {
 		Input:         0.80,
 		Output:        4.00,
 		CacheCreation: 1.00,
@@ -80,7 +98,7 @@ func CalculateCost(entry models.UsageEntry) float64 {
 	pricing, ok := ModelPricing[normalisedModel]
 	if !ok {
 		// Use Sonnet pricing as default for unknown models
-		pricing = ModelPricing["claude-sonnet-4"]
+		pricing = ModelPricing["claude-sonnet-4-6"]
 	}
 
 	cost := 0.0
@@ -97,7 +115,7 @@ func CalculateCostForTokens(model string, input, output, cacheCreation, cacheRea
 	normalisedModel := models.NormaliseModelName(model)
 	pricing, ok := ModelPricing[normalisedModel]
 	if !ok {
-		pricing = ModelPricing["claude-sonnet-4"]
+		pricing = ModelPricing["claude-sonnet-4-6"]
 	}
 
 	cost := 0.0
