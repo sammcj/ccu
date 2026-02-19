@@ -607,14 +607,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 					}
 				} else {
 					// Depletion after reset - limits will reset before we hit them
-					timeAfterReset := costDepletion.Sub(resetTime)
-					if timeAfterReset <= 30*time.Minute {
-						// Close enough to reset that it's still worth showing
-						costStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
-					} else {
-						// Well after reset - prediction is meaningless, don't show it
-						hasCostPrediction = false
-					}
+					hasCostPrediction = false
 				}
 			}
 		}
@@ -643,8 +636,8 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 				weeklyStr = "Weekly limit exceeded!"
 				weeklyStyle = lipgloss.NewStyle().Foreground(ColorDanger)
 				showWeeklyPart = true
-			} else if !weeklyPrediction.DepletionTime.IsZero() && weeklyPrediction.WillHitLimit {
-				// Will hit limit before reset - show when
+			} else if !weeklyPrediction.DepletionTime.IsZero() && weeklyPrediction.WillHitLimit && weeklyPrediction.DepletionTime.Before(resetTime) {
+				// Will hit limit before session reset - show when
 				timeUntil := weeklyPrediction.DepletionTime.Sub(now)
 				weeklyDepletionStr := fmt.Sprintf("%s %s",
 					weeklyPrediction.DepletionTime.Local().Format("Mon"),
