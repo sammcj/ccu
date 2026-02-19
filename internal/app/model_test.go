@@ -465,11 +465,11 @@ func TestShouldRetryOAuth(t *testing.T) {
 			expectRetry: true,
 		},
 		{
-			name:        "token expired never retries",
+			name:        "token expired retries after cooldown",
 			disabled:    true,
 			disabledAt:  time.Now().Add(-10 * time.Minute),
 			reason:      "token expired",
-			expectRetry: false,
+			expectRetry: true,
 		},
 		{
 			name:        "re-authenticate never retries",

@@ -232,7 +232,7 @@ func (m *AppModel) ShouldRetryOAuth() bool {
 
 	// Don't retry errors that require user intervention
 	reason := strings.ToLower(m.oauthDisableReason)
-	if strings.Contains(reason, "token expired") || strings.Contains(reason, "re-authenticate") {
+	if strings.Contains(reason, "re-authenticate") {
 		return false
 	}
 

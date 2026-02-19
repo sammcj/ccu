@@ -13,8 +13,8 @@ import (
 
 // Common OAuth errors
 var (
-	// ErrTokenExpired indicates the OAuth token has expired and needs re-authentication
-	ErrTokenExpired = errors.New("OAuth token expired - run 'claude logout && claude login' to re-authenticate")
+	// ErrTokenExpired indicates the OAuth token has expired (usually auto-refreshed by Claude Code)
+	ErrTokenExpired = errors.New("OAuth token expired - will retry automatically (run 'claude login' if this persists)")
 	// ErrNetworkError indicates a transient network issue
 	ErrNetworkError = errors.New("network error")
 )
@@ -198,7 +198,7 @@ func IsTransientError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Token expired is not transient - requires user action
+	// Token expired is not transient - but will be retried after cooldown
 	if errors.Is(err, ErrTokenExpired) {
 		return false
 	}
