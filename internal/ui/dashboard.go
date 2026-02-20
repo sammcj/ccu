@@ -39,6 +39,22 @@ func formatRow(emoji, label, bar, value, suffix string) string {
 	return b.String()
 }
 
+// dayOrdinalSuffix returns the English ordinal suffix for a day number (st, nd, rd, th).
+func dayOrdinalSuffix(day int) string {
+	switch {
+	case day == 11 || day == 12 || day == 13:
+		return "th"
+	case day%10 == 1:
+		return "st"
+	case day%10 == 2:
+		return "nd"
+	case day%10 == 3:
+		return "rd"
+	default:
+		return "th"
+	}
+}
+
 // DashboardData contains all data needed to render the dashboard
 type DashboardData struct {
 	Config                 *models.Config
@@ -561,8 +577,6 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 		}
 	}
 
-	resetTimeStr := resetTime.Local().Format("3:04 PM")
-	whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
 	purpleStyle := lipgloss.NewStyle().Foreground(ColorPrediction)
 	pinkStyle := lipgloss.NewStyle().Foreground(ColorOpus)
 
@@ -606,21 +620,25 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 						costStyle = lipgloss.NewStyle().Foreground(ColorWarning)
 					}
 				} else {
-					// Depletion after reset - limits will reset before we hit them
-					hasCostPrediction = false
+					// Depletion after reset - show if within 1 hour of reset (near miss)
+					timeAfterReset := costDepletion.Sub(resetTime)
+					if timeAfterReset <= 1*time.Hour {
+						hasCostPrediction = true
+						costDepletionStr = costDepletion.Local().Format("3:04 PM") + " (after reset)"
+						costStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
+					} else {
+						hasCostPrediction = false
+					}
 				}
 			}
 		}
 	}
 
-	// Build session prediction part
+	// Build session prediction part - only show when there's an actual depletion prediction
 	var sessionPart string
 	if hasCostPrediction {
 		sessionPart = fmt.Sprintf("[%s]",
 			costStyle.Render(fmt.Sprintf("Session limit: %s", costDepletionStr)))
-	} else {
-		sessionPart = fmt.Sprintf("[%s]",
-			whiteStyle.Render(fmt.Sprintf("Resets: %s", resetTimeStr)))
 	}
 
 	// Build weekly prediction part - only show if there's a problem (not OK)
@@ -636,25 +654,35 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 				weeklyStr = "Weekly limit exceeded!"
 				weeklyStyle = lipgloss.NewStyle().Foreground(ColorDanger)
 				showWeeklyPart = true
-			} else if !weeklyPrediction.DepletionTime.IsZero() && weeklyPrediction.WillHitLimit && weeklyPrediction.DepletionTime.Before(resetTime) {
-				// Will hit limit before session reset - show when
-				timeUntil := weeklyPrediction.DepletionTime.Sub(now)
-				weeklyDepletionStr := fmt.Sprintf("%s %s",
-					weeklyPrediction.DepletionTime.Local().Format("Mon"),
-					weeklyPrediction.DepletionTime.Local().Format("3:04 PM"))
+			} else if !weeklyPrediction.DepletionTime.IsZero() {
+				depLocal := weeklyPrediction.DepletionTime.Local()
+				depDay := depLocal.Day()
+				weeklyDepletionStr := fmt.Sprintf("%s %d%s %s",
+					depLocal.Format("Mon"), depDay, dayOrdinalSuffix(depDay),
+					depLocal.Format("3:04 PM"))
 
-				switch {
-				case timeUntil <= 6*time.Hour:
-					weeklyStyle = lipgloss.NewStyle().Foreground(ColorDanger) // Red
-				case timeUntil <= 12*time.Hour:
-					weeklyStyle = lipgloss.NewStyle().Foreground(ColorPrimary) // Orange
-				default:
-					// More than 12h but will still hit limit before reset - yellow
-					weeklyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
+				if weeklyPrediction.WillHitLimit {
+					// Will hit limit before weekly reset
+					timeUntil := weeklyPrediction.DepletionTime.Sub(now)
+					switch {
+					case timeUntil <= 6*time.Hour:
+						weeklyStyle = lipgloss.NewStyle().Foreground(ColorDanger) // Red
+					case timeUntil <= 12*time.Hour:
+						weeklyStyle = lipgloss.NewStyle().Foreground(ColorPrimary) // Orange
+					default:
+						weeklyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
+					}
+					weeklyStr = fmt.Sprintf("Weekly limit: %s", weeklyDepletionStr)
+					showWeeklyPart = true
+				} else {
+					// Depletion after weekly reset - show if within 1 day of reset
+					timeAfterReset := weeklyPrediction.DepletionTime.Sub(weeklyPrediction.ResetTime)
+					if timeAfterReset <= 24*time.Hour {
+						weeklyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
+						weeklyStr = fmt.Sprintf("Weekly limit: %s (after reset)", weeklyDepletionStr)
+						showWeeklyPart = true
+					}
 				}
-
-				weeklyStr = fmt.Sprintf("Weekly limit: %s", weeklyDepletionStr)
-				showWeeklyPart = true
 			}
 			// Skip showing "Weekly: OK" or "Insufficient data" - only show problems
 
@@ -678,13 +706,25 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 		updatedStr = " | " + dimStyle.Render(fmt.Sprintf("Updated: %s", oauthData.FetchedAt.Local().Format("3:04 PM")))
 	}
 
-	return fmt.Sprintf("🔮 %s %s%s%s%s",
-		purpleStyle.Render("Prediction:"),
-		sessionPart,
-		weeklyPart,
-		reminder,
-		updatedStr,
-	)
+	// Only show prediction line if there's an actual prediction or reminder
+	hasPrediction := sessionPart != "" || weeklyPart != ""
+	if !hasPrediction && reminder == "" {
+		if updatedStr != "" {
+			// Strip leading " | " from updatedStr when it's the only content
+			return "🔮 " + updatedStr[3:]
+		}
+		return ""
+	}
+
+	var parts strings.Builder
+	parts.WriteString("🔮 ")
+	parts.WriteString(purpleStyle.Render("Prediction:"))
+	parts.WriteString(" ")
+	parts.WriteString(sessionPart)
+	parts.WriteString(weeklyPart)
+	parts.WriteString(reminder)
+	parts.WriteString(updatedStr)
+	return parts.String()
 }
 
 // renderOAuthLimitWarning renders warning if OAuth limits are approaching
