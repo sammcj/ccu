@@ -138,6 +138,16 @@ func TestIsTransientError(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "rate limit error is transient",
+			err:      &RateLimitError{RetryAfter: 60 * time.Second},
+			expected: true,
+		},
+		{
+			name:     "rate limit error without retry-after is transient",
+			err:      &RateLimitError{},
+			expected: true,
+		},
+		{
 			name:     "timeout error is transient",
 			err:      assert.AnError, // Using generic error with timeout in message below
 			expected: false,          // generic error without keyword is not transient
@@ -170,6 +180,82 @@ func TestIsTransientError(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	tests := []struct {
+		name     string
+		header   string
+		expected time.Duration
+	}{
+		{
+			name:     "empty header returns default",
+			header:   "",
+			expected: 2 * time.Minute,
+		},
+		{
+			name:     "seconds value",
+			header:   "60",
+			expected: 60 * time.Second,
+		},
+		{
+			name:     "small seconds value",
+			header:   "5",
+			expected: 5 * time.Second,
+		},
+		{
+			name:     "zero returns default",
+			header:   "0",
+			expected: 2 * time.Minute,
+		},
+		{
+			name:     "negative returns default",
+			header:   "-10",
+			expected: 2 * time.Minute,
+		},
+		{
+			name:     "unparseable returns default",
+			header:   "not-a-number",
+			expected: 2 * time.Minute,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseRetryAfter(tt.header)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestRateLimitError(t *testing.T) {
+	t.Run("with retry-after", func(t *testing.T) {
+		err := &RateLimitError{RetryAfter: 90 * time.Second}
+		assert.Contains(t, err.Error(), "retry after")
+		assert.ErrorIs(t, err, ErrRateLimited)
+	})
+
+	t.Run("without retry-after", func(t *testing.T) {
+		err := &RateLimitError{}
+		assert.Equal(t, "rate limited by API", err.Error())
+		assert.ErrorIs(t, err, ErrRateLimited)
+	})
+}
+
+func TestGetRetryAfter(t *testing.T) {
+	t.Run("rate limit error", func(t *testing.T) {
+		err := &RateLimitError{RetryAfter: 45 * time.Second}
+		assert.Equal(t, 45*time.Second, GetRetryAfter(err))
+	})
+
+	t.Run("non-rate-limit error", func(t *testing.T) {
+		err := &testError{msg: "some other error"}
+		assert.Equal(t, time.Duration(0), GetRetryAfter(err))
+	})
+
+	t.Run("nil error", func(t *testing.T) {
+		assert.Equal(t, time.Duration(0), GetRetryAfter(nil))
+	})
 }
 
 // testError is a simple error type for testing

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,7 +18,25 @@ var (
 	ErrTokenExpired = errors.New("OAuth token expired - will retry automatically (run 'claude login' if this persists)")
 	// ErrNetworkError indicates a transient network issue
 	ErrNetworkError = errors.New("network error")
+	// ErrRateLimited indicates the API returned 429 Too Many Requests
+	ErrRateLimited = errors.New("rate limited by API")
 )
+
+// RateLimitError wraps ErrRateLimited with an optional Retry-After duration
+type RateLimitError struct {
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitError) Error() string {
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf("rate limited by API (retry after %s)", e.RetryAfter)
+	}
+	return "rate limited by API"
+}
+
+func (e *RateLimitError) Unwrap() error {
+	return ErrRateLimited
+}
 
 // ClaudeAiOAuth represents the OAuth structure within keychain credentials
 type ClaudeAiOAuth struct {
@@ -158,6 +177,12 @@ func (c *Client) FetchUsage() (*UsageData, error) {
 		var errorBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errorBody)
 
+		// Handle 429 rate limiting with Retry-After support
+		if resp.StatusCode == http.StatusTooManyRequests {
+			retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+			return nil, &RateLimitError{RetryAfter: retryAfter}
+		}
+
 		// Check for token_expired error specifically
 		if resp.StatusCode == http.StatusUnauthorized {
 			if errMap, ok := errorBody["error"].(map[string]any); ok {
@@ -192,7 +217,7 @@ func ParseResetTime(resetAt string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, resetAt)
 }
 
-// IsTransientError returns true if the error is likely transient (network issues)
+// IsTransientError returns true if the error is likely transient (network issues, rate limits)
 // and the operation should be retried later
 func IsTransientError(err error) bool {
 	if err == nil {
@@ -202,6 +227,10 @@ func IsTransientError(err error) bool {
 	if errors.Is(err, ErrTokenExpired) {
 		return false
 	}
+	// Rate limiting is transient
+	if errors.Is(err, ErrRateLimited) {
+		return true
+	}
 	// Network errors are transient (case-insensitive check)
 	errStr := strings.ToLower(err.Error())
 	return strings.Contains(errStr, "network") ||
@@ -210,4 +239,40 @@ func IsTransientError(err error) bool {
 		strings.Contains(errStr, "dial") ||
 		strings.Contains(errStr, "eof") ||
 		strings.Contains(errStr, "reset by peer")
+}
+
+// parseRetryAfter parses the Retry-After header value.
+// Supports both delay-seconds (e.g. "60") and HTTP-date formats.
+// Returns a default of 2 minutes if the header is missing or unparseable.
+func parseRetryAfter(header string) time.Duration {
+	const defaultRetry = 2 * time.Minute
+
+	if header == "" {
+		return defaultRetry
+	}
+
+	// Try as seconds first
+	if seconds, err := strconv.Atoi(header); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+
+	// Try as HTTP-date
+	if t, err := time.Parse(time.RFC1123, header); err == nil {
+		d := time.Until(t)
+		if d > 0 {
+			return d
+		}
+	}
+
+	return defaultRetry
+}
+
+// GetRetryAfter extracts the RetryAfter duration from a RateLimitError.
+// Returns 0 if the error is not a RateLimitError.
+func GetRetryAfter(err error) time.Duration {
+	var rle *RateLimitError
+	if errors.As(err, &rle) {
+		return rle.RetryAfter
+	}
+	return 0
 }

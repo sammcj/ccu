@@ -33,12 +33,13 @@ type tickMsg struct {
 }
 type resumeMsg struct{} // Sent when process resumes from suspension (SIGCONT)
 type dataLoadedMsg struct {
-	entries        []models.UsageEntry
-	oauthData      *oauth.UsageData
-	err            error
-	oauthErr       error // Separate OAuth error for proper handling
-	oauthDisabled  bool  // Whether OAuth should be permanently disabled
-	oauthFreshData bool  // Whether OAuth data was freshly fetched (not from cache)
+	entries            []models.UsageEntry
+	oauthData          *oauth.UsageData
+	err                error
+	oauthErr           error         // Separate OAuth error for proper handling
+	oauthDisabled      bool          // Whether OAuth should be permanently disabled
+	oauthFreshData     bool          // Whether OAuth data was freshly fetched (not from cache)
+	oauthRateLimitWait time.Duration // How long to wait before retrying after 429
 }
 type clearScreenMsg struct{}
 
@@ -135,6 +136,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.SetError(msg.err)
 			return m, nil
+		}
+
+		// Handle rate limit backoff - don't disable OAuth, just delay next fetch
+		if msg.oauthRateLimitWait > 0 {
+			m.oauthRateLimitUntil = time.Now().Add(msg.oauthRateLimitWait)
 		}
 
 		// Handle OAuth errors - disable OAuth if permanent failure
@@ -274,10 +280,14 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 		}
 
 		oauthNotDisabled := model == nil || !model.IsOAuthDisabled()
+		// Respect rate limit backoff - don't fetch if we're within the backoff window
+		oauthRateLimited := model != nil && !model.oauthRateLimitUntil.IsZero() && time.Now().Before(model.oauthRateLimitUntil)
 		// Weekly refresh safety net: ensure OAuth is fetched at least every 15 minutes for weekly data
 		weeklyRefreshNeeded := model != nil && !model.GetLastWeeklyFetch().IsZero() && time.Since(model.GetLastWeeklyFetch()) >= 15*time.Minute
-		shouldFetchOAuth := oauth.IsAvailable() && oauthNotDisabled &&
+		shouldFetchOAuth := oauth.IsAvailable() && oauthNotDisabled && !oauthRateLimited &&
 			(model == nil || forceRefresh || time.Since(model.lastOAuthFetch) >= 60*time.Second || isOAuthSessionStale(model) || weeklyRefreshNeeded)
+
+		var oauthRateLimitWait time.Duration
 
 		if shouldFetchOAuth {
 			client, err := oauth.NewClient()
@@ -287,14 +297,20 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 					oauthErr = err
 					oauthData = nil
 
-					// Determine if this is a permanent failure
-					if errors.Is(err, oauth.ErrTokenExpired) {
+					if errors.Is(err, oauth.ErrRateLimited) {
+						// Rate limited - use cached data and back off
+						oauthRateLimitWait = oauth.GetRetryAfter(err)
+						if model != nil && model.oauthData != nil {
+							oauthData = model.oauthData
+						}
+						log.Printf("OAuth rate limited, backing off for %s", oauthRateLimitWait)
+					} else if errors.Is(err, oauth.ErrTokenExpired) {
 						oauthShouldDisable = true
 					} else if !oauth.IsTransientError(err) {
 						// Other non-transient errors also disable OAuth
 						oauthShouldDisable = true
 					}
-					// For transient errors, we'll retry on the next tick
+					// For transient errors (network etc), we'll retry on the next tick
 				} else {
 					// Successfully fetched fresh OAuth data
 					oauthFreshData = true
@@ -318,12 +334,13 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 		entries, err := data.LoadUsageData(config.DataPath, hoursToLoad)
 
 		return dataLoadedMsg{
-			entries:        entries,
-			oauthData:      oauthData,
-			err:            err,
-			oauthErr:       oauthErr,
-			oauthDisabled:  oauthShouldDisable,
-			oauthFreshData: oauthFreshData,
+			entries:            entries,
+			oauthData:          oauthData,
+			err:                err,
+			oauthErr:           oauthErr,
+			oauthDisabled:      oauthShouldDisable,
+			oauthFreshData:     oauthFreshData,
+			oauthRateLimitWait: oauthRateLimitWait,
 		}
 	}
 }

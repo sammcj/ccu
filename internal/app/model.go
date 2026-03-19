@@ -34,6 +34,7 @@ type AppModel struct {
 	oauthDisabled      bool      // Whether OAuth has been disabled due to permanent error
 	oauthDisableReason string    // Reason OAuth was disabled (for UI display)
 	oauthDisabledAt    time.Time // When OAuth was disabled (for retry logic)
+	oauthRateLimitUntil time.Time // Don't fetch OAuth until this time (after 429)
 	oauthErrorLogged   bool      // Whether we've already logged the OAuth error
 	forceRefresh       bool      // Force next refresh to bypass cache (after wake/focus)
 	tickGeneration     uint64    // Incremented on resume to kill stale tick chains
