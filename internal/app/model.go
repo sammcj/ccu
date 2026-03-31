@@ -203,6 +203,21 @@ func (m *AppModel) GetOAuthDisableReason() string {
 	return m.oauthDisableReason
 }
 
+// getOAuthUnavailableReason returns a user-facing reason why OAuth data isn't showing.
+// Distinguishes between permanently disabled, temporarily rate limited, and still loading.
+func (m *AppModel) getOAuthUnavailableReason() string {
+	if m.oauthDisableReason != "" {
+		return m.oauthDisableReason
+	}
+	if !m.oauthRateLimitUntil.IsZero() && time.Now().Before(m.oauthRateLimitUntil) {
+		return "rate limited, will retry shortly"
+	}
+	if m.oauthEnabled && m.oauthData == nil && !m.oauthDisabled {
+		return "loading..."
+	}
+	return ""
+}
+
 // MarkOAuthErrorLogged marks that we've logged the OAuth error
 func (m *AppModel) MarkOAuthErrorLogged() {
 	m.oauthErrorLogged = true

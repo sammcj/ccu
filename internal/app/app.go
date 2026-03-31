@@ -26,6 +26,12 @@ func init() {
 	_ = io.Discard // silence unused import warning
 }
 
+// Minimum intervals between OAuth API calls to avoid rate limiting (429s).
+const (
+	oauthNormalInterval = 4 * time.Minute  // Regular polling interval
+	oauthForceInterval  = 60 * time.Second // Minimum interval even for urgent refreshes (wake/focus/stale)
+)
+
 // Messages
 type tickMsg struct {
 	time       time.Time
@@ -234,7 +240,7 @@ func (m AppModel) View() string {
 			CurrentSession:        m.currentSession,
 			AllSessions:           m.sessions,
 			OAuthData:             m.oauthData,
-			OAuthUnavailableReason: m.oauthDisableReason,
+			OAuthUnavailableReason: m.getOAuthUnavailableReason(),
 		}
 		content = ui.RenderDashboard(data)
 	}
@@ -284,8 +290,20 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 		oauthRateLimited := model != nil && !model.oauthRateLimitUntil.IsZero() && time.Now().Before(model.oauthRateLimitUntil)
 		// Weekly refresh safety net: ensure OAuth is fetched at least every 15 minutes for weekly data
 		weeklyRefreshNeeded := model != nil && !model.GetLastWeeklyFetch().IsZero() && time.Since(model.GetLastWeeklyFetch()) >= 15*time.Minute
+		// Calculate time since last OAuth fetch for interval gating
+		timeSinceLastFetch := time.Duration(0)
+		if model != nil && !model.lastOAuthFetch.IsZero() {
+			timeSinceLastFetch = time.Since(model.lastOAuthFetch)
+		}
+		pastNormalInterval := model == nil || model.lastOAuthFetch.IsZero() || timeSinceLastFetch >= oauthNormalInterval
+		pastForceInterval := model == nil || model.lastOAuthFetch.IsZero() || timeSinceLastFetch >= oauthForceInterval
+
+		// Gate all OAuth fetches behind minimum intervals to avoid API rate limits (429s).
+		// Normal polling: every 3 minutes. Urgent (wake/focus/stale): still respect 60s minimum.
 		shouldFetchOAuth := oauth.IsAvailable() && oauthNotDisabled && !oauthRateLimited &&
-			(model == nil || forceRefresh || time.Since(model.lastOAuthFetch) >= 60*time.Second || isOAuthSessionStale(model) || weeklyRefreshNeeded)
+			(model == nil ||
+				pastNormalInterval ||
+				(pastForceInterval && (forceRefresh || isOAuthSessionStale(model) || weeklyRefreshNeeded)))
 
 		var oauthRateLimitWait time.Duration
 
@@ -302,6 +320,12 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 						oauthRateLimitWait = oauth.GetRetryAfter(err)
 						if model != nil && model.oauthData != nil {
 							oauthData = model.oauthData
+						} else if model == nil || model.oauthData == nil {
+							// No cached data (first load or cache cleared) - use shorter backoff
+							// so we retry sooner rather than leaving the UI in fallback mode
+							if oauthRateLimitWait > 30*time.Second {
+								oauthRateLimitWait = 30 * time.Second
+							}
 						}
 						log.Printf("OAuth rate limited, backing off for %s", oauthRateLimitWait)
 					} else if errors.Is(err, oauth.ErrTokenExpired) {
