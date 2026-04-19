@@ -6,10 +6,25 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sammcj/ccu/internal/models"
 )
+
+// loadCache memoises LoadUsageData across refresh ticks. When the set of
+// relevant files (and their mtime/size) is unchanged since the previous call,
+// the cached slice is returned without touching disk. This is the hot path
+// when the TUI is idle: ~2k JSONL files, ~200 of them active, parsed every
+// refresh interval otherwise.
+type loadCache struct {
+	mu          sync.Mutex
+	fingerprint string
+	hoursBack   int
+	entries     []models.UsageEntry
+}
+
+var globalLoadCache loadCache
 
 // FindJSONLFiles recursively finds all .jsonl files in the given path
 func FindJSONLFiles(rootPath string) ([]string, error) {
@@ -176,11 +191,56 @@ func LoadUsageData(dataPath string, hoursBack int) ([]models.UsageEntry, error) 
 		return nil, fmt.Errorf("no JSONL files found in %s", dataPath)
 	}
 
+	// Build a fingerprint of the files that would actually be parsed (inside
+	// the cutoff window). If it matches the previous call, skip the reparse.
+	fingerprint := buildLoadFingerprint(files, hoursBack)
+
+	globalLoadCache.mu.Lock()
+	if globalLoadCache.entries != nil &&
+		globalLoadCache.hoursBack == hoursBack &&
+		globalLoadCache.fingerprint == fingerprint {
+		cached := globalLoadCache.entries
+		globalLoadCache.mu.Unlock()
+		return cached, nil
+	}
+	globalLoadCache.mu.Unlock()
+
 	// Read and process entries
 	entries, err := ReadUsageEntries(files, hoursBack)
 	if err != nil {
 		return nil, fmt.Errorf("reading usage entries: %w", err)
 	}
 
+	globalLoadCache.mu.Lock()
+	globalLoadCache.fingerprint = fingerprint
+	globalLoadCache.hoursBack = hoursBack
+	globalLoadCache.entries = entries
+	globalLoadCache.mu.Unlock()
+
 	return entries, nil
+}
+
+// buildLoadFingerprint produces a deterministic signature of the JSONL files
+// that will be parsed by ReadUsageEntries for this hoursBack window. Files
+// whose mtime is already before the cutoff are excluded because
+// ReadUsageEntries skips them anyway. Stat failures fall through as an empty
+// row so a missing file still invalidates the cache.
+func buildLoadFingerprint(files []string, hoursBack int) string {
+	var cutoff time.Time
+	if hoursBack > 0 {
+		cutoff = time.Now().Add(-time.Duration(hoursBack) * time.Hour)
+	}
+	var b strings.Builder
+	for _, f := range files {
+		info, err := os.Stat(f)
+		if err != nil {
+			fmt.Fprintf(&b, "%s|missing\n", f)
+			continue
+		}
+		if !cutoff.IsZero() && info.ModTime().Before(cutoff) {
+			continue
+		}
+		fmt.Fprintf(&b, "%s|%d|%d\n", f, info.ModTime().UnixNano(), info.Size())
+	}
+	return b.String()
 }

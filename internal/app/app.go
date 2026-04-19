@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -19,11 +20,25 @@ import (
 )
 
 func init() {
-	// Send logs to stderr so they don't interfere with TUI
-	log.SetOutput(os.Stderr)
-	// Optionally disable logs entirely in production:
-	// log.SetOutput(io.Discard)
-	_ = io.Discard // silence unused import warning
+	// Bubbletea runs in the alternate screen, so anything written to stderr
+	// (the default log destination) corrupts the TUI. Redirect logs to a file
+	// under the user's cache dir, or discard them if that isn't writable.
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		log.SetOutput(io.Discard)
+		return
+	}
+	logDir := filepath.Join(cacheDir, "ccu")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		log.SetOutput(io.Discard)
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(logDir, "ccu.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.SetOutput(io.Discard)
+		return
+	}
+	log.SetOutput(f)
 }
 
 // Minimum intervals between OAuth API calls to avoid rate limiting (429s).
