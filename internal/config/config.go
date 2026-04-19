@@ -70,15 +70,16 @@ func ParseFlags() (*models.Config, error) {
 		config.DataPath = filepath.Join(homeDir, ".claude", "projects")
 	}
 
-	// Auto-detect plan from keychain when the user hasn't set it explicitly.
-	// flag.Visit only visits flags that were explicitly provided on the command line.
-	planExplicit := false
+	// flag.Visit only walks flags that were explicitly provided on the command line.
+	// Using it lets us tell "user set the flag to the default value" from "user didn't
+	// set the flag at all", which matters when deciding whether CLI beats env vars.
+	explicit := make(map[string]bool)
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "plan" {
-			planExplicit = true
-		}
+		explicit[f.Name] = true
 	})
-	if !planExplicit {
+
+	// Auto-detect plan from keychain when the user hasn't set it explicitly.
+	if !explicit["plan"] {
 		if detected := oauth.DetectPlan(); detected != "" {
 			*plan = detected
 		}
@@ -158,23 +159,27 @@ func ParseFlags() (*models.Config, error) {
 	config.API.Enabled = *apiEnabled
 	if !config.API.Enabled {
 		if v := os.Getenv("CCU_API"); v == "true" || v == "1" {
-		config.API.Enabled = true
-	} else if v := os.Getenv("CCU_ENABLE_API"); v == "true" || v == "1" {
+			config.API.Enabled = true
+		} else if v := os.Getenv("CCU_ENABLE_API"); v == "true" || v == "1" {
 			config.API.Enabled = true
 		}
 	}
 
-	if *apiPort != 19840 {
+	// Port: explicit CLI flag wins, otherwise env var, otherwise the flag default.
+	if explicit["api-port"] {
 		config.API.Port = *apiPort
 	} else if v := os.Getenv("CCU_API_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
 			config.API.Port = p
+		} else {
+			config.API.Port = *apiPort
 		}
 	} else {
 		config.API.Port = *apiPort
 	}
 
-	if *apiBind != "0.0.0.0" {
+	// Bind: explicit CLI flag wins, otherwise env var, otherwise the flag default.
+	if explicit["api-bind"] {
 		config.API.BindAddr = *apiBind
 	} else if v := os.Getenv("CCU_API_BIND"); v != "" {
 		config.API.BindAddr = v

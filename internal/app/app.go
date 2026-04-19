@@ -96,6 +96,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadDataCmdWithModel(m.config, &m)
 		}
 
+	case tea.InterruptMsg:
+		// Fires when SIGINT reaches bubbletea via signal rather than as a raw
+		// byte (e.g. when stdin isn't a TTY). Exits cleanly instead of letting
+		// bubbletea return ErrInterrupted from Run().
+		return m, tea.Quit
+
 	case tea.WindowSizeMsg:
 		m.SetDimensions(msg.Width, msg.Height)
 		// Trigger a screen clear and redraw after resize to prevent stale content
@@ -273,53 +279,67 @@ func loadDataCmd(config *models.Config) tea.Cmd {
 	return loadDataCmdWithModel(config, nil)
 }
 
-// loadDataCmdWithModel loads data with optional model context for OAuth caching
+// loadDataCmdWithModel loads data with optional model context for OAuth caching.
+//
+// All model reads and mutations happen synchronously here, before the returned
+// closure runs. The closure captures only value-typed locals. This matters
+// because Update uses a value receiver: `model` is a pointer to Update's local
+// copy of AppModel. Once Update returns, Bubbletea replaces the live model with
+// the returned value; any state the closure writes via `model` would go to the
+// discarded copy and be silently lost, and any reads inside the closure would
+// see a stale snapshot. Keeping every model touchpoint synchronous means the
+// mutations propagate through Update's returned model as the caller expects.
 func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
-	// Capture forceRefresh state before async execution
 	forceRefresh := model != nil && model.ShouldForceRefresh()
 	if forceRefresh && model != nil {
 		model.SetForceRefresh(false) // Clear the flag immediately
+	}
+
+	// Check if OAuth should be retried after being disabled
+	if model != nil && model.ShouldRetryOAuth() {
+		model.ReenableOAuth()
+		log.Printf("OAuth re-enabled after cooldown period, retrying")
+	}
+
+	oauthNotDisabled := model == nil || !model.IsOAuthDisabled()
+	oauthRateLimited := model != nil && !model.oauthRateLimitUntil.IsZero() && time.Now().Before(model.oauthRateLimitUntil)
+	weeklyRefreshNeeded := model != nil && !model.GetLastWeeklyFetch().IsZero() && time.Since(model.GetLastWeeklyFetch()) >= 15*time.Minute
+
+	var lastOAuthFetch time.Time
+	if model != nil {
+		lastOAuthFetch = model.lastOAuthFetch
+	}
+	timeSinceLastFetch := time.Duration(0)
+	if !lastOAuthFetch.IsZero() {
+		timeSinceLastFetch = time.Since(lastOAuthFetch)
+	}
+	pastNormalInterval := model == nil || lastOAuthFetch.IsZero() || timeSinceLastFetch >= oauthNormalInterval
+	pastForceInterval := model == nil || lastOAuthFetch.IsZero() || timeSinceLastFetch >= oauthForceInterval
+
+	// isOAuthSessionStale may update model.zeroRemainingStart; call it synchronously
+	// so those writes propagate via Update's returned model.
+	sessionStale := model != nil && isOAuthSessionStale(model)
+
+	// Gate all OAuth fetches behind minimum intervals to avoid API rate limits (429s).
+	// Normal polling: every 4 minutes. Urgent (wake/focus/stale): still respect 60s minimum.
+	shouldFetchOAuth := oauth.IsAvailable() && oauthNotDisabled && !oauthRateLimited &&
+		(model == nil ||
+			pastNormalInterval ||
+			(pastForceInterval && (forceRefresh || sessionStale || weeklyRefreshNeeded)))
+
+	// Snapshot the cached OAuth data and disabled state for the async closure.
+	var cachedOAuthData *oauth.UsageData
+	var oauthIsDisabled bool
+	if model != nil {
+		cachedOAuthData = model.oauthData
+		oauthIsDisabled = model.IsOAuthDisabled()
 	}
 
 	return func() tea.Msg {
 		var oauthData *oauth.UsageData
 		var oauthErr error
 		var oauthShouldDisable bool
-		var oauthFreshData bool // Track if we fetched fresh data vs using cache
-
-		// Only fetch OAuth data if:
-		// 1. OAuth is available
-		// 2. OAuth hasn't been permanently disabled
-		// 3. We haven't fetched in the last 60 seconds (or model is nil on first load)
-		// 4. OR the cached OAuth data has a stale session (reset time already passed)
-		// 5. OR forceRefresh is set (wake from sleep, terminal focus regained)
-		// 6. OR weekly data hasn't been refreshed in 15 minutes (safety net for guaranteed weekly updates)
-		// Check if OAuth should be retried after being disabled
-		if model != nil && model.ShouldRetryOAuth() {
-			model.ReenableOAuth()
-			log.Printf("OAuth re-enabled after cooldown period, retrying")
-		}
-
-		oauthNotDisabled := model == nil || !model.IsOAuthDisabled()
-		// Respect rate limit backoff - don't fetch if we're within the backoff window
-		oauthRateLimited := model != nil && !model.oauthRateLimitUntil.IsZero() && time.Now().Before(model.oauthRateLimitUntil)
-		// Weekly refresh safety net: ensure OAuth is fetched at least every 15 minutes for weekly data
-		weeklyRefreshNeeded := model != nil && !model.GetLastWeeklyFetch().IsZero() && time.Since(model.GetLastWeeklyFetch()) >= 15*time.Minute
-		// Calculate time since last OAuth fetch for interval gating
-		timeSinceLastFetch := time.Duration(0)
-		if model != nil && !model.lastOAuthFetch.IsZero() {
-			timeSinceLastFetch = time.Since(model.lastOAuthFetch)
-		}
-		pastNormalInterval := model == nil || model.lastOAuthFetch.IsZero() || timeSinceLastFetch >= oauthNormalInterval
-		pastForceInterval := model == nil || model.lastOAuthFetch.IsZero() || timeSinceLastFetch >= oauthForceInterval
-
-		// Gate all OAuth fetches behind minimum intervals to avoid API rate limits (429s).
-		// Normal polling: every 3 minutes. Urgent (wake/focus/stale): still respect 60s minimum.
-		shouldFetchOAuth := oauth.IsAvailable() && oauthNotDisabled && !oauthRateLimited &&
-			(model == nil ||
-				pastNormalInterval ||
-				(pastForceInterval && (forceRefresh || isOAuthSessionStale(model) || weeklyRefreshNeeded)))
-
+		var oauthFreshData bool
 		var oauthRateLimitWait time.Duration
 
 		if shouldFetchOAuth {
@@ -331,18 +351,26 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 					oauthData = nil
 
 					if errors.Is(err, oauth.ErrRateLimited) {
-						// Rate limited - use cached data and back off
-						oauthRateLimitWait = oauth.GetRetryAfter(err)
-						if model != nil && model.oauthData != nil {
-							oauthData = model.oauthData
-						} else if model == nil || model.oauthData == nil {
+						// Rate limited - use cached data and back off. The API's
+						// Retry-After is sometimes shorter than our normal poll
+						// interval; in that case respect the normal interval
+						// floor to avoid hammering the endpoint and leaving
+						// "rate limited" pinned to the UI for minutes at a time.
+						apiRetry := oauth.GetRetryAfter(err)
+						oauthRateLimitWait = apiRetry
+						if cachedOAuthData != nil {
+							oauthData = cachedOAuthData
+							if oauthRateLimitWait < oauthNormalInterval {
+								oauthRateLimitWait = oauthNormalInterval
+							}
+						} else {
 							// No cached data (first load or cache cleared) - use shorter backoff
 							// so we retry sooner rather than leaving the UI in fallback mode
 							if oauthRateLimitWait > 30*time.Second {
 								oauthRateLimitWait = 30 * time.Second
 							}
 						}
-						log.Printf("OAuth rate limited, backing off for %s", oauthRateLimitWait)
+						log.Printf("OAuth rate limited: API asked for %s, backing off %s", apiRetry, oauthRateLimitWait)
 					} else if errors.Is(err, oauth.ErrTokenExpired) {
 						oauthShouldDisable = true
 					} else if !oauth.IsTransientError(err) {
@@ -359,10 +387,10 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 				// Client creation failure is usually permanent (keychain issue)
 				oauthShouldDisable = true
 			}
-		} else if model != nil && model.oauthData != nil && !model.IsOAuthDisabled() {
+		} else if cachedOAuthData != nil && !oauthIsDisabled {
 			// Reuse cached OAuth data (oauthFreshData remains false)
 			// Don't reuse when OAuth is disabled - the data is stale
-			oauthData = model.oauthData
+			oauthData = cachedOAuthData
 		}
 
 		// Load at least 7 days (168 hours) of data for weekly usage calculations

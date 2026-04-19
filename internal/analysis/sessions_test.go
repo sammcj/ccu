@@ -151,6 +151,116 @@ func TestPredictCostDepletion(t *testing.T) {
 	}
 }
 
+// TestCalculateBurnRate_ProportionalOverlap covers the proportional-overlap
+// math that backs the burn-rate prediction (see CLAUDE.md Gotchas). These are
+// the cases the documentation calls out specifically: partial overlap with the
+// 1-hour window, a completed session entirely inside the window, and sessions
+// outside the window.
+func TestCalculateBurnRate_ProportionalOverlap(t *testing.T) {
+	now := time.Now()
+
+	t.Run("session longer than window contributes proportional slice", func(t *testing.T) {
+		// Session ran for 2 hours ending now, 1200 display tokens.
+		// 1 hour of the session overlaps the window: 1200 * (60/120) = 600 tokens.
+		// 600 tokens / 60 minutes = 10 tokens/min.
+		sessionStart := now.Add(-2 * time.Hour)
+		end := now
+		blocks := []models.SessionBlock{{
+			StartTime:     sessionStart,
+			EndTime:       sessionStart.Add(5 * time.Hour),
+			ActualEndTime: &end,
+			DisplayTokens: 1200,
+			IsActive:      false,
+			IsGap:         false,
+		}}
+
+		got := CalculateBurnRate(blocks, now)
+		if got < 9.5 || got > 10.5 {
+			t.Errorf("proportional overlap burn rate = %.2f, want ~10.0", got)
+		}
+	})
+
+	t.Run("session shorter than window contributes all its tokens", func(t *testing.T) {
+		// 30-minute completed session with 1800 display tokens sits fully inside the window.
+		// 1800 tokens / 60 minutes of window = 30 tokens/min.
+		sessionStart := now.Add(-45 * time.Minute)
+		end := now.Add(-15 * time.Minute)
+		blocks := []models.SessionBlock{{
+			StartTime:     sessionStart,
+			EndTime:       sessionStart.Add(5 * time.Hour),
+			ActualEndTime: &end,
+			DisplayTokens: 1800,
+			IsActive:      false,
+			IsGap:         false,
+		}}
+
+		got := CalculateBurnRate(blocks, now)
+		if got < 29.5 || got > 30.5 {
+			t.Errorf("short session burn rate = %.2f, want ~30.0", got)
+		}
+	})
+
+	t.Run("session that ended before the window is excluded", func(t *testing.T) {
+		sessionStart := now.Add(-3 * time.Hour)
+		end := now.Add(-90 * time.Minute)
+		blocks := []models.SessionBlock{{
+			StartTime:     sessionStart,
+			EndTime:       sessionStart.Add(5 * time.Hour),
+			ActualEndTime: &end,
+			DisplayTokens: 10000,
+			IsActive:      false,
+			IsGap:         false,
+		}}
+
+		if got := CalculateBurnRate(blocks, now); got != 0 {
+			t.Errorf("out-of-window session burn rate = %.2f, want 0", got)
+		}
+	})
+
+	t.Run("gap blocks are ignored", func(t *testing.T) {
+		sessionStart := now.Add(-30 * time.Minute)
+		blocks := []models.SessionBlock{{
+			StartTime:     sessionStart,
+			EndTime:       sessionStart.Add(2 * time.Hour),
+			DisplayTokens: 99999,
+			IsGap:         true,
+		}}
+
+		if got := CalculateBurnRate(blocks, now); got != 0 {
+			t.Errorf("gap-only burn rate = %.2f, want 0", got)
+		}
+	})
+
+	t.Run("two overlapping sessions both contribute proportionally", func(t *testing.T) {
+		// A: 2-hour session ending now, 1200 tokens -> contributes 600 tokens to window.
+		// B: 30-minute session inside the window, 900 tokens -> contributes 900 tokens.
+		// Total: 1500 tokens in the hour = 25 tokens/min.
+		startA := now.Add(-2 * time.Hour)
+		endA := now
+		startB := now.Add(-40 * time.Minute)
+		endB := now.Add(-10 * time.Minute)
+		blocks := []models.SessionBlock{
+			{
+				StartTime:     startA,
+				EndTime:       startA.Add(5 * time.Hour),
+				ActualEndTime: &endA,
+				DisplayTokens: 1200,
+			},
+			{
+				StartTime:     startB,
+				EndTime:       startB.Add(5 * time.Hour),
+				ActualEndTime: &endB,
+				DisplayTokens: 900,
+			},
+		}
+
+		got := CalculateBurnRate(blocks, now)
+		if got < 24.5 || got > 25.5 {
+			t.Errorf("two-session burn rate = %.2f, want ~25.0", got)
+		}
+	})
+}
+
 func TestPredictTokenDepletion(t *testing.T) {
 	now := time.Now()
 	tokenBurnRate := 100.0 // 100 tokens per minute

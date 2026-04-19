@@ -110,14 +110,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if len(data) == 0 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"error":"no data"}`))
+		if _, err := w.Write([]byte(`{"error":"no data"}`)); err != nil {
+			log.Printf("api: write error (no data response): %v", err)
+		}
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "max-age=5")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	if _, err := w.Write(data); err != nil {
+		log.Printf("api: write error (status response): %v", err)
+	}
 }
 
 // isAllowedIP returns true if the remote address falls within any configured CIDR.

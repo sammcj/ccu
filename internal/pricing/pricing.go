@@ -1,6 +1,22 @@
 package pricing
 
-import "github.com/sammcj/ccu/internal/models"
+import (
+	"fmt"
+
+	"github.com/sammcj/ccu/internal/models"
+)
+
+// fallbackModel is the pricing key used when a normalised model name is not
+// found in ModelPricing. It MUST remain a valid key in ModelPricing; the
+// init() check below fails fast if that invariant ever regresses (for example
+// after a model rename in models.NormaliseModelName).
+const fallbackModel = "claude-sonnet-4-6"
+
+func init() {
+	if _, ok := ModelPricing[fallbackModel]; !ok {
+		panic(fmt.Sprintf("pricing: fallback model %q missing from ModelPricing", fallbackModel))
+	}
+}
 
 // Pricing holds per-million token costs for a model
 type Pricing struct {
@@ -98,7 +114,7 @@ func CalculateCost(entry models.UsageEntry) float64 {
 	pricing, ok := ModelPricing[normalisedModel]
 	if !ok {
 		// Use Sonnet pricing as default for unknown models
-		pricing = ModelPricing["claude-sonnet-4-6"]
+		pricing = ModelPricing[fallbackModel]
 	}
 
 	cost := 0.0
@@ -115,7 +131,7 @@ func CalculateCostForTokens(model string, input, output, cacheCreation, cacheRea
 	normalisedModel := models.NormaliseModelName(model)
 	pricing, ok := ModelPricing[normalisedModel]
 	if !ok {
-		pricing = ModelPricing["claude-sonnet-4-6"]
+		pricing = ModelPricing[fallbackModel]
 	}
 
 	cost := 0.0

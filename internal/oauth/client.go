@@ -1,9 +1,12 @@
 package oauth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os/exec"
 	"slices"
@@ -161,10 +164,14 @@ func (c *Client) FetchUsage() (*UsageData, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set required headers for OAuth beta endpoint
+	// Set required headers for OAuth beta endpoint. Header selection matches
+	// what Claude Code itself sends (verified via mitmproxy against a live
+	// client on 2026-04-20). Accept-Encoding is intentionally omitted so the
+	// Go http package can auto-negotiate gzip and transparently decompress.
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token.AccessToken))
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	req.Header.Set("User-Agent", "claude-code/2.0.54")
+	req.Header.Set("User-Agent", userAgent())
+	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -174,8 +181,13 @@ func (c *Client) FetchUsage() (*UsageData, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// Read up to 4 KiB of the body so we can still produce a useful error
+		// message even when the payload isn't valid JSON. Parsing is best-effort;
+		// the raw snippet is kept as a fallback for diagnostics.
+		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+
 		var errorBody map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&errorBody)
+		decodeErr := json.Unmarshal(rawBody, &errorBody)
 
 		// Handle 429 rate limiting with Retry-After support
 		if resp.StatusCode == http.StatusTooManyRequests {
@@ -183,17 +195,28 @@ func (c *Client) FetchUsage() (*UsageData, error) {
 			return nil, &RateLimitError{RetryAfter: retryAfter}
 		}
 
-		// Check for token_expired error specifically
+		// Any 401 is treated as an auth failure requiring user action. The API
+		// uses a couple of shapes here:
+		//   error.details.error_code == "token_expired"  (auto-refreshable)
+		//   error.type == "authentication_error"         (credentials rejected)
+		// Both map to ErrTokenExpired so the UI shows a single, actionable
+		// message instead of a wall of JSON.
 		if resp.StatusCode == http.StatusUnauthorized {
-			if errMap, ok := errorBody["error"].(map[string]any); ok {
-				if details, ok := errMap["details"].(map[string]any); ok {
-					if code, ok := details["error_code"].(string); ok && code == "token_expired" {
-						return nil, ErrTokenExpired
-					}
-				}
-			}
+			return nil, ErrTokenExpired
 		}
 
+		if decodeErr != nil {
+			snippet := strings.TrimSpace(string(rawBody))
+			if len(snippet) > 200 {
+				snippet = snippet[:200] + "..."
+			}
+			return nil, fmt.Errorf("API returned status %d (body: %q)", resp.StatusCode, snippet)
+		}
+		// Prefer the server's own message field if it's present, otherwise
+		// fall back to the decoded map so diagnostics aren't lost.
+		if msg := extractErrorMessage(errorBody); msg != "" {
+			return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, msg)
+		}
 		return nil, fmt.Errorf("API returned status %d: %v", resp.StatusCode, errorBody)
 	}
 
@@ -231,7 +254,21 @@ func IsTransientError(err error) bool {
 	if errors.Is(err, ErrRateLimited) {
 		return true
 	}
-	// Network errors are transient (case-insensitive check)
+
+	// Prefer typed checks over substring matching where possible.
+	// context.Canceled is intentionally excluded: a cancelled context means the
+	// caller is shutting down and does not want a retry.
+	if errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, io.EOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || isTemporary(netErr)) {
+		return true
+	}
+
+	// Fallback substring match for wrapped errors that don't expose typed values.
 	errStr := strings.ToLower(err.Error())
 	return strings.Contains(errStr, "network") ||
 		strings.Contains(errStr, "timeout") ||
@@ -241,8 +278,41 @@ func IsTransientError(err error) bool {
 		strings.Contains(errStr, "reset by peer")
 }
 
+// isTemporary reports whether a net.Error considers itself transient. The
+// Temporary() method is deprecated on most stdlib error types but still set on
+// a handful of wrappers, so guard the assertion instead of relying on it.
+func isTemporary(err error) bool {
+	type temporary interface{ Temporary() bool }
+	if t, ok := err.(temporary); ok {
+		return t.Temporary()
+	}
+	return false
+}
+
+// extractErrorMessage pulls a human-readable message out of Anthropic's error
+// envelope: { "error": { "message": "...", "type": "..." }, ... }. Falls back
+// to the type if message is missing. Returns "" when neither is available.
+func extractErrorMessage(body map[string]any) string {
+	errObj, ok := body["error"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	if msg, ok := errObj["message"].(string); ok && msg != "" {
+		if t, ok := errObj["type"].(string); ok && t != "" {
+			return fmt.Sprintf("%s (%s)", msg, t)
+		}
+		return msg
+	}
+	if t, ok := errObj["type"].(string); ok {
+		return t
+	}
+	return ""
+}
+
 // parseRetryAfter parses the Retry-After header value.
-// Supports both delay-seconds (e.g. "60") and HTTP-date formats.
+// Supports both delay-seconds (e.g. "60") and HTTP-date formats
+// (RFC 7231 IMF-fixdate and the legacy RFC 850 / ANSI C asctime variants
+// understood by http.ParseTime).
 // Returns a default of 2 minutes if the header is missing or unparseable.
 func parseRetryAfter(header string) time.Duration {
 	const defaultRetry = 2 * time.Minute
@@ -252,12 +322,12 @@ func parseRetryAfter(header string) time.Duration {
 	}
 
 	// Try as seconds first
-	if seconds, err := strconv.Atoi(header); err == nil && seconds > 0 {
+	if seconds, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && seconds > 0 {
 		return time.Duration(seconds) * time.Second
 	}
 
-	// Try as HTTP-date
-	if t, err := time.Parse(time.RFC1123, header); err == nil {
+	// Try as HTTP-date. http.ParseTime covers IMF-fixdate, RFC 850 and asctime.
+	if t, err := http.ParseTime(header); err == nil {
 		d := time.Until(t)
 		if d > 0 {
 			return d

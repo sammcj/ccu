@@ -76,3 +76,75 @@ func TestNormaliseModelName(t *testing.T) {
 		})
 	}
 }
+
+// TestDisplayTokensVsTotalTokens pins down the parity contract with the Python
+// implementation (see CLAUDE.md): DisplayTokens is input+output only and is what
+// the UI shows; TotalTokens adds cache-creation and cache-read tokens and is what
+// the cost calculator reads. If either method ever changes semantics, these
+// tests are the tripwire.
+func TestDisplayTokensVsTotalTokens(t *testing.T) {
+	tests := []struct {
+		name             string
+		entry            UsageEntry
+		wantDisplay      int
+		wantTotal        int
+	}{
+		{
+			name: "all token types present",
+			entry: UsageEntry{
+				InputTokens:         100,
+				OutputTokens:        50,
+				CacheCreationTokens: 1000,
+				CacheReadTokens:     5000,
+			},
+			wantDisplay: 150,
+			wantTotal:   6150,
+		},
+		{
+			name: "no cache tokens",
+			entry: UsageEntry{
+				InputTokens:  200,
+				OutputTokens: 300,
+			},
+			wantDisplay: 500,
+			wantTotal:   500,
+		},
+		{
+			name: "cache-only entry",
+			entry: UsageEntry{
+				CacheCreationTokens: 400,
+				CacheReadTokens:     100,
+			},
+			wantDisplay: 0,
+			wantTotal:   500,
+		},
+		{
+			name:        "zero entry",
+			entry:       UsageEntry{},
+			wantDisplay: 0,
+			wantTotal:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.wantDisplay, tt.entry.DisplayTokens(),
+				"DisplayTokens must exclude cache tokens")
+			assert.Equal(t, tt.wantTotal, tt.entry.TotalTokens(),
+				"TotalTokens must include every token type")
+		})
+	}
+}
+
+// TestModelStatsDisplayTokensVsTotalTokens mirrors the parity check for the
+// aggregate ModelStats type, which has the same invariant.
+func TestModelStatsDisplayTokensVsTotalTokens(t *testing.T) {
+	stats := ModelStats{
+		InputTokens:         1000,
+		OutputTokens:        2000,
+		CacheCreationTokens: 3000,
+		CacheReadTokens:     4000,
+	}
+	assert.Equal(t, 3000, stats.DisplayTokens(), "DisplayTokens must be input+output")
+	assert.Equal(t, 10000, stats.TotalTokens(), "TotalTokens must sum every field")
+}

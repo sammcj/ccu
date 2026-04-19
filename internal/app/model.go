@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -210,7 +211,8 @@ func (m *AppModel) getOAuthUnavailableReason() string {
 		return m.oauthDisableReason
 	}
 	if !m.oauthRateLimitUntil.IsZero() && time.Now().Before(m.oauthRateLimitUntil) {
-		return "rate limited, will retry shortly"
+		remaining := time.Until(m.oauthRateLimitUntil).Round(time.Second)
+		return fmt.Sprintf("rate limited by API, retrying in %s", remaining)
 	}
 	if m.oauthEnabled && m.oauthData == nil && !m.oauthDisabled {
 		return "loading..."

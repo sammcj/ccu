@@ -3,6 +3,7 @@ package data
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,24 @@ func FindJSONLFiles(rootPath string) ([]string, error) {
 	return jsonlFiles, nil
 }
 
+// maxJSONLLineBytes is the largest single JSONL line the scanner will accept.
+// Some Claude Code recordings include large tool-use payloads on a single line.
+const maxJSONLLineBytes = 10 * 1024 * 1024 // 10 MiB
+
+// readStats records non-fatal problems encountered while loading JSONL data.
+// Values are advisory: callers use them to surface a single summary warning
+// rather than logging every skipped file.
+//
+//   - skippedFiles: files that couldn't be opened OR whose scan aborted
+//     partway (bubbled up from readJSONLFileWithFilter as an error).
+//   - parseErrors: individual JSONL lines that failed to unmarshal. The file
+//     they came from still contributes any lines that did parse.
+type readStats struct {
+	skippedFiles int
+	parseErrors  int
+	lastErr      error
+}
+
 // ReadUsageEntries reads usage entries from JSONL files
 // Optimised to filter during parsing to reduce memory usage
 func ReadUsageEntries(files []string, hoursBack int) ([]models.UsageEntry, error) {
@@ -64,6 +83,13 @@ func ReadUsageEntries(files []string, hoursBack int) ([]models.UsageEntry, error
 	seen := make(map[string]bool)
 	var allEntries []models.UsageEntry
 
+	// Reuse one scanner buffer across every file rather than allocating a fresh
+	// 10 MiB per file. bufio.Scanner will grow from the initial size up to the
+	// cap on demand, so this covers the "one huge line" case without the
+	// per-file allocation cost when the tree has thousands of JSONL files.
+	scanBuf := make([]byte, 64*1024)
+	stats := &readStats{}
+
 	for _, file := range files {
 		// Check file modification time - skip old files entirely
 		if hoursBack > 0 {
@@ -74,13 +100,18 @@ func ReadUsageEntries(files []string, hoursBack int) ([]models.UsageEntry, error
 			}
 		}
 
-		entries, err := readJSONLFileWithFilter(file, cutoff, seen)
+		entries, err := readJSONLFileWithFilter(file, cutoff, seen, scanBuf, stats)
 		if err != nil {
-			// Silently skip files that can't be read (e.g., too large)
-			// These are typically file-history snapshots that aren't needed
+			stats.skippedFiles++
+			stats.lastErr = err
 			continue
 		}
 		allEntries = append(allEntries, entries...)
+	}
+
+	if stats.skippedFiles > 0 || stats.parseErrors > 0 {
+		log.Printf("data: %d file(s) skipped, %d parse error(s); last err: %v",
+			stats.skippedFiles, stats.parseErrors, stats.lastErr)
 	}
 
 	// Sort by timestamp
@@ -89,10 +120,12 @@ func ReadUsageEntries(files []string, hoursBack int) ([]models.UsageEntry, error
 	return allEntries, nil
 }
 
-// readJSONLFileWithFilter reads a JSONL file with time filtering and deduplication
-// cutoff: entries before this time are skipped (zero value = no filter)
-// seen: map for deduplication (nil = no deduplication)
-func readJSONLFileWithFilter(filePath string, cutoff time.Time, seen map[string]bool) ([]models.UsageEntry, error) {
+// readJSONLFileWithFilter reads a JSONL file with time filtering and deduplication.
+// cutoff: entries before this time are skipped (zero value = no filter).
+// seen: map for deduplication (nil = no deduplication).
+// scanBuf: scanner working buffer shared across files; can grow up to maxJSONLLineBytes.
+// stats: aggregates non-fatal counters (parse errors, scan errors).
+func readJSONLFileWithFilter(filePath string, cutoff time.Time, seen map[string]bool, scanBuf []byte, stats *readStats) ([]models.UsageEntry, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("opening file: %w", err)
@@ -101,11 +134,7 @@ func readJSONLFileWithFilter(filePath string, cutoff time.Time, seen map[string]
 
 	var entries []models.UsageEntry
 	scanner := bufio.NewScanner(file)
-
-	// Increase buffer size for large lines (10MB to handle large JSONL files)
-	const maxCapacity = 10 * 1024 * 1024 // 10MB
-	buf := make([]byte, maxCapacity)
-	scanner.Buffer(buf, maxCapacity)
+	scanner.Buffer(scanBuf, maxJSONLLineBytes)
 
 	hasCutoff := !cutoff.IsZero()
 	lineNum := 0
@@ -120,7 +149,10 @@ func readJSONLFileWithFilter(filePath string, cutoff time.Time, seen map[string]
 
 		entry, err := ParseJSONLLine(line)
 		if err != nil {
-			// Suppress warnings for cleaner output
+			if stats != nil {
+				stats.parseErrors++
+				stats.lastErr = fmt.Errorf("%s:%d: %w", filePath, lineNum, err)
+			}
 			continue
 		}
 
@@ -147,7 +179,10 @@ func readJSONLFileWithFilter(filePath string, cutoff time.Time, seen map[string]
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scanning file: %w", err)
+		// Scan failure bubbles up as a file-level error; ReadUsageEntries will
+		// increment skippedFiles. We don't add a separate counter here to avoid
+		// double-counting the same failure under two different labels.
+		return nil, fmt.Errorf("scanning file %s: %w", filePath, err)
 	}
 
 	return entries, nil
