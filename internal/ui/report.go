@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sammcj/ccu/internal/analysis"
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/pricing"
 )
@@ -133,7 +134,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 
 	// Header
 	fmt.Fprintf(&sb, "Claude Code Token Usage Report - %s (%s)\n", periodType, tzName)
-	sb.WriteString(strings.Repeat("─", 140) + "\n")
+	sb.WriteString(strings.Repeat("─", 154) + "\n")
 
 	// Column headers - use wider model column for full names
 	var periodLabel string
@@ -149,9 +150,9 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 		periodLabel = "Date"
 		periodWidth = 12
 	}
-	fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
-		periodWidth, periodLabel, "Model", "Input", "Output", "Cache Create", "Cache Read", "Total Tokens", "Est. Cost")
-	sb.WriteString(strings.Repeat("─", 140) + "\n")
+	fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %10s  %16s  %12s\n",
+		periodWidth, periodLabel, "Model", "Input", "Output", "Cache Create", "Cache Read", "CacheHit%", "Total Tokens", "Est. Cost")
+	sb.WriteString(strings.Repeat("─", 154) + "\n")
 
 	// Grand totals
 	var totalInput, totalOutput, totalCacheCreate, totalCacheRead, totalTokens int
@@ -209,7 +210,8 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 				displayPeriod = periodStr
 			}
 
-			fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
+			modelHitRate := analysis.CalculateCacheHitRate(ms.InputTokens, ms.CacheCreationTokens, ms.CacheReadTokens)
+			fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %10s  %16s  %12s\n",
 				periodWidth,
 				displayPeriod,
 				truncate(modelName, 30),
@@ -217,6 +219,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 				formatNumber(ms.OutputTokens),
 				formatNumber(ms.CacheCreationTokens),
 				formatNumber(ms.CacheReadTokens),
+				fmt.Sprintf("%.1f%%", modelHitRate),
 				formatNumber(ms.TotalTokens),
 				fmt.Sprintf("$%.2f", ms.TotalCost))
 
@@ -247,7 +250,8 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 				subtotalLabel = "Subtotal *"
 			}
 
-			fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
+			periodHitRate := analysis.CalculateCacheHitRate(periodInput, periodCacheCreate, periodCacheRead)
+			fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %10s  %16s  %12s\n",
 				periodWidth,
 				"",
 				subtotalLabel,
@@ -255,6 +259,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 				formatNumber(periodOutput),
 				formatNumber(periodCacheCreate),
 				formatNumber(periodCacheRead),
+				fmt.Sprintf("%.1f%%", periodHitRate),
 				formatNumber(periodTokens),
 				fmt.Sprintf("$%.2f", periodCost))
 		}
@@ -264,14 +269,16 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 	}
 
 	// Grand total row
-	sb.WriteString(strings.Repeat("─", 140) + "\n")
-	fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %16s  %12s\n",
+	sb.WriteString(strings.Repeat("─", 154) + "\n")
+	totalHitRate := analysis.CalculateCacheHitRate(totalInput, totalCacheCreate, totalCacheRead)
+	fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %10s  %16s  %12s\n",
 		periodWidth,
 		"TOTAL", "",
 		formatNumber(totalInput),
 		formatNumber(totalOutput),
 		formatNumber(totalCacheCreate),
 		formatNumber(totalCacheRead),
+		fmt.Sprintf("%.1f%%", totalHitRate),
 		formatNumber(totalTokens),
 		fmt.Sprintf("$%.2f", totalCost))
 

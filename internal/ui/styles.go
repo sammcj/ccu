@@ -299,6 +299,31 @@ func GetPercentageStyle(percent float64) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(GetPercentageColour(percent))
 }
 
+// GetCacheHitRateColour returns the colour for cache hit rate bars.
+// Cache hits are "good when high", so this uses fixed thresholds rather than a smooth gradient:
+//
+//	>= 93%: green   (healthy)
+//	>= 90%: yellow  (mild concern)
+//	>= 85%: orange  (caching degraded)
+//	<  85%: red     (poor caching — investigate)
+func GetCacheHitRateColour(percent float64) lipgloss.Color {
+	switch {
+	case percent >= 93:
+		return ColorSuccess // Bright green
+	case percent >= 90:
+		return ColorPercent50 // Yellow (#FFDD00)
+	case percent >= 85:
+		return ColorPercent60 // Orange (#FFB000)
+	default:
+		return ColorPercent90 // Red (#FF2200)
+	}
+}
+
+// GetCacheHitRateStyle returns a style for cache hit rate displays
+func GetCacheHitRateStyle(percent float64) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(GetCacheHitRateColour(percent))
+}
+
 // GetTimeRemainingColour returns the colour for time remaining bars (gold → green)
 // High percentage (lots of time) = gold/yellow, low percentage (approaching reset) = green
 func GetTimeRemainingColour(percent float64) lipgloss.Color {

@@ -280,6 +280,22 @@ func TestRenderReport_GrandTotals(t *testing.T) {
 	assert.Contains(t, report, "400", "total output: 50+250+100 = 400")
 }
 
+func TestRenderReport_CacheHitRateColumn(t *testing.T) {
+	tz := time.UTC
+	day := time.Date(2025, 12, 15, 10, 0, 0, 0, tz)
+
+	// Single entry with known cache split: input=100, cc=100, cr=800
+	// hit rate = 800 / 1000 = 80.0%
+	entries := []models.UsageEntry{
+		makeEntry(day, "claude-sonnet-4", 100, 50, 100, 800, 0.10),
+	}
+
+	report := GenerateDailyReport(entries, tz)
+
+	assert.Contains(t, report, "CacheHit%", "header should include CacheHit% column")
+	assert.Contains(t, report, "80.0%", "row should show computed cache hit rate")
+}
+
 func TestAggregateForReport_SortsChronologically(t *testing.T) {
 	tz := time.UTC
 

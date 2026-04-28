@@ -115,6 +115,105 @@ func TestCalculateBurnRate(t *testing.T) {
 	}
 }
 
+func TestCalculateCacheHitRate(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       int
+		cacheCreate int
+		cacheRead   int
+		want        float64
+	}{
+		{"all zero", 0, 0, 0, 0},
+		{"only fresh input", 1000, 0, 0, 0},
+		{"perfect hit rate (cache read only)", 0, 0, 1000, 100},
+		{"typical mix", 100, 200, 700, 70},                    // 700 / 1000
+		{"50% hit", 100, 100, 200, 50},                        // 200 / 400
+		{"only cache writes (no reads)", 100, 900, 0, 0},      // 0 / 1000
+		{"large numbers", 532_700, 71_600_000, 1_673_400_000, 95.868}, // approx token-stats example row
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CalculateCacheHitRate(tt.input, tt.cacheCreate, tt.cacheRead)
+			if got < tt.want-0.01 || got > tt.want+0.01 {
+				t.Errorf("CalculateCacheHitRate(%d,%d,%d) = %.4f, want %.4f",
+					tt.input, tt.cacheCreate, tt.cacheRead, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCalculateSessionCacheHitRate(t *testing.T) {
+	now := time.Now()
+	block := &models.SessionBlock{
+		StartTime: now.Add(-1 * time.Hour),
+		EndTime:   now.Add(4 * time.Hour),
+		Entries: []models.UsageEntry{
+			{InputTokens: 100, CacheCreationTokens: 200, CacheReadTokens: 700},
+			{InputTokens: 50, CacheCreationTokens: 50, CacheReadTokens: 400},
+		},
+	}
+	// totals: input=150, cc=250, cr=1100, denom=1500, hit = 73.333%
+	got := CalculateSessionCacheHitRate(block)
+	want := 73.333
+	if got < want-0.01 || got > want+0.01 {
+		t.Errorf("CalculateSessionCacheHitRate = %.4f, want %.4f", got, want)
+	}
+
+	// Gap block returns 0
+	gap := &models.SessionBlock{IsGap: true}
+	if rate := CalculateSessionCacheHitRate(gap); rate != 0 {
+		t.Errorf("gap block should return 0, got %.4f", rate)
+	}
+
+	// Nil returns 0
+	if rate := CalculateSessionCacheHitRate(nil); rate != 0 {
+		t.Errorf("nil block should return 0, got %.4f", rate)
+	}
+}
+
+func TestCalculateWindowCacheHitRate(t *testing.T) {
+	now := time.Now()
+
+	blocks := []models.SessionBlock{
+		// Within last 7 days
+		{
+			StartTime: now.Add(-2 * 24 * time.Hour),
+			Entries: []models.UsageEntry{
+				{InputTokens: 100, CacheCreationTokens: 100, CacheReadTokens: 800},
+			},
+		},
+		{
+			StartTime: now.Add(-1 * 24 * time.Hour),
+			Entries: []models.UsageEntry{
+				{InputTokens: 50, CacheCreationTokens: 50, CacheReadTokens: 100},
+			},
+		},
+		// Older than 7 days - excluded
+		{
+			StartTime: now.Add(-10 * 24 * time.Hour),
+			Entries: []models.UsageEntry{
+				{InputTokens: 10000, CacheCreationTokens: 0, CacheReadTokens: 0},
+			},
+		},
+		// Gap - skipped
+		{
+			StartTime: now.Add(-1 * time.Hour),
+			IsGap:     true,
+			Entries: []models.UsageEntry{
+				{InputTokens: 999999},
+			},
+		},
+	}
+
+	got := CalculateWindowCacheHitRate(blocks, now, 7*24*time.Hour)
+	// totals: input=150, cc=150, cr=900, denom=1200, hit=75%
+	want := 75.0
+	if got < want-0.01 || got > want+0.01 {
+		t.Errorf("CalculateWindowCacheHitRate = %.4f, want %.4f", got, want)
+	}
+}
+
 func TestCalculateCostBurnRate(t *testing.T) {
 	now := time.Now()
 	sessionStart := now.Add(-1 * time.Hour)

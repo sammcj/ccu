@@ -211,6 +211,52 @@ func PredictTokenDepletion(tokenBurnRate float64, tokensRemaining int, currentTi
 	return currentTime.Add(time.Duration(minutesToDepletion) * time.Minute)
 }
 
+// CalculateCacheHitRate returns the percentage of input tokens served from cache.
+// Denominator is fresh input + cache creation + cache read; output tokens are excluded.
+// Returns 0 when there is no input activity at all.
+func CalculateCacheHitRate(inputTokens, cacheCreationTokens, cacheReadTokens int) float64 {
+	denom := inputTokens + cacheCreationTokens + cacheReadTokens
+	if denom <= 0 {
+		return 0
+	}
+	return (float64(cacheReadTokens) / float64(denom)) * 100
+}
+
+// CalculateSessionCacheHitRate returns the cache hit rate across all entries in a session block.
+func CalculateSessionCacheHitRate(block *models.SessionBlock) float64 {
+	if block == nil || block.IsGap {
+		return 0
+	}
+	var input, cacheCreate, cacheRead int
+	for _, e := range block.Entries {
+		input += e.InputTokens
+		cacheCreate += e.CacheCreationTokens
+		cacheRead += e.CacheReadTokens
+	}
+	return CalculateCacheHitRate(input, cacheCreate, cacheRead)
+}
+
+// CalculateWindowCacheHitRate returns the cache hit rate across all session blocks
+// whose start time falls within the given lookback window from now.
+func CalculateWindowCacheHitRate(blocks []models.SessionBlock, now time.Time, lookback time.Duration) float64 {
+	cutoff := now.Add(-lookback)
+	var input, cacheCreate, cacheRead int
+	for _, b := range blocks {
+		if b.IsGap {
+			continue
+		}
+		if b.StartTime.Before(cutoff) {
+			continue
+		}
+		for _, e := range b.Entries {
+			input += e.InputTokens
+			cacheCreate += e.CacheCreationTokens
+			cacheRead += e.CacheReadTokens
+		}
+	}
+	return CalculateCacheHitRate(input, cacheCreate, cacheRead)
+}
+
 // CalculateSessionCost calculates the total cost for a session
 func CalculateSessionCost(block *models.SessionBlock) float64 {
 	totalCost := 0.0

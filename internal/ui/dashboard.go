@@ -79,6 +79,10 @@ func RenderDashboard(data DashboardData) string {
 	// Weekly usage (if enabled) -- OAuth-only, no JSONL fallback
 	if data.Config.ShowWeekly && data.OAuthData != nil && (data.OAuthData.SevenDaySonnet != nil || data.OAuthData.SevenDayOpus != nil) {
 		output = append(output, renderWeeklyUsageFromOAuth(data.OAuthData, data.Limits, barWidth)...)
+		// Cache hit rate over the last 7 days (sourced from JSONL — OAuth has no cache breakdown)
+		if line := renderWeeklyCacheHitRate(data.AllSessions, now, barWidth); line != "" {
+			output = append(output, line)
+		}
 	}
 
 	// Calculate burn rates (tokens and cost)
@@ -108,6 +112,11 @@ func RenderDashboard(data DashboardData) string {
 		output = append(output, renderSessionMetricsFromOAuth(data.OAuthData, sessionDistribution, barWidth, now)...)
 	} else {
 		output = append(output, renderSessionFallback(data.CurrentSession, sessionDistribution, now, data.OAuthUnavailableReason)...)
+	}
+
+	// Session cache hit rate — JSONL-derived, available regardless of OAuth status
+	if line := renderSessionCacheHitRate(data.CurrentSession, barWidth); line != "" {
+		output = append(output, line)
 	}
 
 	output = append(output, "") // Blank line before prediction
@@ -725,6 +734,76 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	parts.WriteString(reminder)
 	parts.WriteString(updatedStr)
 	return parts.String()
+}
+
+// renderCacheHitRateLine renders a cache hit rate row, styled to match other dashboard rows.
+// Cache hit rate is "good when high", so the colour gradient is inverted: 100% → green, 0% → red.
+func renderCacheHitRateLine(emoji, label string, rate float64, barWidth int) string {
+	filled := min(int((rate/100)*float64(barWidth-2)), barWidth-2)
+	if filled < 0 {
+		filled = 0
+	}
+	bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
+
+	// Cache hit thresholds: >=93% green, >=90% yellow, >=85% orange, <85% red
+	style := GetCacheHitRateStyle(rate)
+
+	return formatRow(
+		emoji,
+		label,
+		style.Render(bar),
+		style.Render(fmt.Sprintf("%.1f%%", rate)),
+		"",
+	)
+}
+
+// renderSessionCacheHitRate computes and renders cache hit rate for the current session.
+// Returns empty string when there is no input activity (rate of 0% with no data is misleading).
+func renderSessionCacheHitRate(session *models.SessionBlock, barWidth int) string {
+	if session == nil || session.IsGap {
+		return ""
+	}
+	var input, cacheCreate, cacheRead int
+	for _, e := range session.Entries {
+		input += e.InputTokens
+		cacheCreate += e.CacheCreationTokens
+		cacheRead += e.CacheReadTokens
+	}
+	if input+cacheCreate+cacheRead == 0 {
+		return ""
+	}
+	rate := analysis.CalculateCacheHitRate(input, cacheCreate, cacheRead)
+	return renderCacheHitRateLine("♻️", "Session - Cache Hit:", rate, barWidth)
+}
+
+// weeklyCacheHitWarnThreshold is the rate below which the weekly cache hit row is shown.
+// At or above this threshold, caching is healthy and the row is hidden to reduce noise.
+const weeklyCacheHitWarnThreshold = 90.0
+
+// renderWeeklyCacheHitRate computes and renders cache hit rate for the last 7 days.
+// Returns empty string when there is no input activity in the window or when the rate
+// is at/above weeklyCacheHitWarnThreshold (only surface the metric when it needs attention).
+func renderWeeklyCacheHitRate(blocks []models.SessionBlock, now time.Time, barWidth int) string {
+	cutoff := now.Add(-7 * 24 * time.Hour)
+	var input, cacheCreate, cacheRead int
+	for _, b := range blocks {
+		if b.IsGap || b.StartTime.Before(cutoff) {
+			continue
+		}
+		for _, e := range b.Entries {
+			input += e.InputTokens
+			cacheCreate += e.CacheCreationTokens
+			cacheRead += e.CacheReadTokens
+		}
+	}
+	if input+cacheCreate+cacheRead == 0 {
+		return ""
+	}
+	rate := analysis.CalculateCacheHitRate(input, cacheCreate, cacheRead)
+	if rate >= weeklyCacheHitWarnThreshold {
+		return ""
+	}
+	return renderCacheHitRateLine("♻️", "Weekly - Cache Hit:", rate, barWidth)
 }
 
 // renderOAuthLimitWarning renders warning if OAuth limits are approaching
