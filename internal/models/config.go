@@ -35,6 +35,9 @@ type Config struct {
 	// Report mode (non-interactive output to stdout)
 	ReportMode ReportMode
 
+	// CheckModels compares ccu's model tables against upstream rates and exits
+	CheckModels bool
+
 	// API server configuration
 	API APIConfig
 }

@@ -188,7 +188,7 @@ func getSessionDistributionString(session *models.SessionBlock) string {
 	// Build distribution string (without label) with colour-coded model names
 	var parts []string
 	for _, m := range sortedModels {
-		modelName := formatModelNameSimple(m.name)
+		modelName := FormatModelNameSimple(m.name)
 		modelStyle := GetModelStyle(m.name)
 		colouredModel := modelStyle.Render(modelName)
 		parts = append(parts, fmt.Sprintf("%s: %.1f%%", colouredModel, m.percent))
@@ -236,17 +236,11 @@ func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, 
 	// First bar aligns with other bars, second starts where second column info starts
 	normalBarWidth := barWidth
 
-	tokenFilled := min(int((tokenPercent/100)*float64(normalBarWidth-2)), normalBarWidth-2)
-	if tokenFilled < 0 {
-		tokenFilled = 0
-	}
+	tokenFilled := max(min(int((tokenPercent/100)*float64(normalBarWidth-2)), normalBarWidth-2), 0)
 	tokenBar := "[" + strings.Repeat("█", tokenFilled) + strings.Repeat("░", normalBarWidth-2-tokenFilled) + "]"
 	tokenStyle := GetPercentageStyle(tokenPercent)
 
-	costFilled := min(int((costPercent/100)*float64(normalBarWidth-2)), normalBarWidth-2)
-	if costFilled < 0 {
-		costFilled = 0
-	}
+	costFilled := max(min(int((costPercent/100)*float64(normalBarWidth-2)), normalBarWidth-2), 0)
 	costBar := "[" + strings.Repeat("█", costFilled) + strings.Repeat("░", normalBarWidth-2-costFilled) + "]"
 	costStyle := GetPercentageStyle(costPercent)
 
@@ -284,9 +278,10 @@ func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, 
 
 // Helper functions
 
-// formatModelNameSimple returns simplified model names for display.
-// Converts full API names like "claude-opus-4-5-20251101" to "Opus 4.5"
-func formatModelNameSimple(model string) string {
+// FormatModelNameSimple returns simplified model names for display.
+// Converts full API names like "claude-opus-4-5-20251101" to "Opus 4.5".
+// Exported so modelcheck can verify new models render with a friendly name.
+func FormatModelNameSimple(model string) string {
 	name := strings.TrimPrefix(model, "claude-")
 
 	// Remove date suffix if present (8-digit date like -20251101)
@@ -300,7 +295,7 @@ func formatModelNameSimple(model string) string {
 	}
 
 	// Find model family and extract version
-	families := []string{"opus", "sonnet", "haiku"}
+	families := []string{"fable", "mythos", "opus", "sonnet", "haiku"}
 	for _, family := range families {
 		if strings.Contains(name, family) {
 			_, after, _ := strings.Cut(name, family)
@@ -540,10 +535,7 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 	}
 
 	// Build progress bar that empties from right to left as time runs out
-	timeFilled := min(int((remainingPercent/100)*float64(barWidth-2)), barWidth-2)
-	if timeFilled < 0 {
-		timeFilled = 0
-	}
+	timeFilled := max(min(int((remainingPercent/100)*float64(barWidth-2)), barWidth-2), 0)
 	// Reverse: empty blocks on left, filled blocks on right (drains from right to left)
 	timeBar := "[" + strings.Repeat("░", barWidth-2-timeFilled) + strings.Repeat("█", timeFilled) + "]"
 
@@ -739,10 +731,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 // renderCacheHitRateLine renders a cache hit rate row, styled to match other dashboard rows.
 // Cache hit rate is "good when high", so the colour gradient is inverted: 100% → green, 0% → red.
 func renderCacheHitRateLine(emoji, label string, rate float64, barWidth int) string {
-	filled := min(int((rate/100)*float64(barWidth-2)), barWidth-2)
-	if filled < 0 {
-		filled = 0
-	}
+	filled := max(min(int((rate/100)*float64(barWidth-2)), barWidth-2), 0)
 	bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
 
 	// Cache hit thresholds: >=93% green, >=90% yellow, >=85% orange, <85% red

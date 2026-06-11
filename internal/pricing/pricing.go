@@ -28,6 +28,34 @@ type Pricing struct {
 
 // ModelPricing contains pricing for all known models (per 1M tokens in USD)
 var ModelPricing = map[string]Pricing{
+	// Fable 5 uses a new tokenizer (~30% more tokens for the same content than
+	// Opus-tier models), so its token counts are not directly comparable to
+	// other models' burn rates. Pricing maths is unaffected.
+	"claude-fable-5": {
+		Input:         10.00,
+		Output:        50.00,
+		CacheCreation: 12.50,
+		CacheRead:     1.00,
+	},
+	// Mythos 5 is the same model as Fable 5 (Project Glasswing), same pricing
+	"claude-mythos-5": {
+		Input:         10.00,
+		Output:        50.00,
+		CacheCreation: 12.50,
+		CacheRead:     1.00,
+	},
+	"claude-opus-4-8": {
+		Input:         5.00,
+		Output:        25.00,
+		CacheCreation: 6.25,
+		CacheRead:     0.50,
+	},
+	"claude-opus-4-7": {
+		Input:         5.00,
+		Output:        25.00,
+		CacheCreation: 6.25,
+		CacheRead:     0.50,
+	},
 	"claude-opus-4-6": {
 		Input:         5.00,
 		Output:        25.00,

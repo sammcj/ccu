@@ -35,6 +35,7 @@ func ParseFlags() (*models.Config, error) {
 	customCost := flag.Float64("custom-cost", 0, "Custom cost limit USD (requires -plan=custom)")
 	customMessages := flag.Int("custom-messages", 0, "Custom message limit (requires -plan=custom)")
 	showWeekly := flag.Bool("weekly", true, "Show weekly usage panel")
+	checkModels := flag.Bool("check-models", false, "Check ccu's model pricing/name tables against upstream rates and exit (exit code 1 on drift, 2 on fetch error)")
 	showHelp := flag.Bool("help", false, "Show help message")
 	showVersion := flag.Bool("version", false, "Show version information")
 
@@ -155,6 +156,8 @@ func ParseFlags() (*models.Config, error) {
 	// Set weekly flag
 	config.ShowWeekly = *showWeekly
 
+	config.CheckModels = *checkModels
+
 	// API server configuration (precedence: CLI flag > env var > token file)
 	config.API.Enabled = *apiEnabled
 	if !config.API.Enabled {
@@ -255,6 +258,7 @@ func printHelp() {
 	fmt.Println("  ccu -refresh=10                        # Refresh every 10 seconds")
 	fmt.Println("  ccu -hours=48                          # Load last 48 hours of data")
 	fmt.Println("  ccu -plan=custom -custom-tokens=50000  # Use custom token limit")
+	fmt.Println("  ccu -check-models                      # Check model pricing tables against upstream")
 	fmt.Println("  ccu -api -api-port=19840               # Enable HTTP API server")
 	fmt.Println("  ccu -api -api-token=secret             # API server with bearer token auth")
 	fmt.Println("  ccu -api -api-allow=192.168.1.0/24     # API server with IP allowlist")

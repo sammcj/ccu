@@ -107,6 +107,10 @@ func TestFormatModelNameSimple(t *testing.T) {
 		{"claude-3-5-sonnet", "Sonnet"},
 		{"claude-3-haiku", "Haiku"},
 
+		// Fable / Mythos
+		{"claude-fable-5", "Fable 5"},
+		{"claude-mythos-5", "Mythos 5"},
+
 		// Simple names
 		{"opus", "Opus"},
 		{"sonnet", "Sonnet"},
@@ -118,7 +122,7 @@ func TestFormatModelNameSimple(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			result := formatModelNameSimple(tt.input)
+			result := FormatModelNameSimple(tt.input)
 			assert.Equal(t, tt.expected, result, "Model name formatting mismatch")
 		})
 	}

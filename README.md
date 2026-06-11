@@ -77,6 +77,7 @@ ccu -hours=48      # Last 48 hours
 - `-custom-cost` - Custom cost limit in USD (requires `-plan=custom`)
 - `-custom-messages` - Custom message limit (requires `-plan=custom`)
 - `-weekly` - Show weekly usage panel (default: `true`)
+- `-check-models` - Check ccu's model pricing and display-name tables against upstream rates (LiteLLM dataset) and exit. Exit code `1` on drift with a hint describing what to update, `2` on fetch errors. Useful in CI or for AI agents maintaining this codebase
 - `-api` - Enable the embedded HTTP API server (default: `false`)
 - `-api-port` - API server port (default: `19840`)
 - `-api-bind` - API server bind address (default: `0.0.0.0`)

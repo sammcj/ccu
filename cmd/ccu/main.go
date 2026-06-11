@@ -13,6 +13,7 @@ import (
 	"github.com/sammcj/ccu/internal/app"
 	"github.com/sammcj/ccu/internal/config"
 	"github.com/sammcj/ccu/internal/data"
+	"github.com/sammcj/ccu/internal/modelcheck"
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/ui"
 )
@@ -35,6 +36,11 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Handle model table check (non-interactive, exits with status code)
+	if cfg.CheckModels {
+		os.Exit(runModelCheck())
 	}
 
 	// Handle report mode (non-interactive output to stdout)
@@ -81,6 +87,28 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error running application: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runModelCheck compares ccu's model tables against upstream pricing.
+// Returns 0 when in sync, 1 when drift was found, 2 on fetch/parse errors.
+func runModelCheck() int {
+	data, err := modelcheck.FetchUpstream(context.Background(), modelcheck.UpstreamURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error fetching upstream pricing: %v\n", err)
+		return 2
+	}
+
+	report, err := modelcheck.Compare(data)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error comparing model tables: %v\n", err)
+		return 2
+	}
+
+	fmt.Print(report.Format())
+	if len(report.Findings) > 0 {
+		return 1
+	}
+	return 0
 }
 
 // runReport generates a static report and outputs to stdout
