@@ -1,10 +1,14 @@
 # Changelog
 
-<!-- AI agents: add entries under the ## [Unreleased] header. Do NOT add version numbers or dates - git tags are the source of truth and versions are stamped at release time. Do NOT duplicate headings. The ## Known Bugs section must always stay pinned above ## [Unreleased]. Group entries under ### Added, ### Changed, ### Fixed, or ### Removed. Combine or update items refined within the same session. If the file exceeds 2000 lines, truncate the oldest releases. -->
-
-## Known Bugs
+<!-- AI agents: first run `make stamp-version` to freeze any already-released [Unreleased] content against the latest git tag (safe no-op when empty), then add entries under the ## [Unreleased] header. Do NOT add version numbers or dates - git tags are the source of truth and versions are stamped at release time. Do NOT duplicate headings. Group entries under ### Added, ### Changed, ### Fixed, or ### Removed. Combine or update items refined within the same session. If the file exceeds 2000 lines, truncate the oldest releases. -->
 
 ## [Unreleased]
+
+### Changed
+
+- Changelog conventions: agents stamp already-released content before adding entries; Known Bugs section removed
+
+## [0.2.6] - 2026-07-03
 
 ### Added
 
