@@ -31,8 +31,7 @@ DO NOT confuse these - they serve different purposes.
 fallback with raw cost and message count but no progress bars or percentages. JSONL data cannot
 produce accurate percentages because the hardcoded plan limits don't match Anthropic's actual limits.
 
-**OAuth retry**: When OAuth is disabled due to a non-permanent error, it automatically retries after
-5 minutes. Errors requiring user action (token expired, re-authenticate) do not auto-retry.
+**OAuth retry**: When OAuth is disabled it automatically retries after 5 minutes, including for token-expired errors (Claude Code usually refreshes the token itself). Only the missing-scope error (`oauth.ErrMissingScope`, fixed by `claude logout && claude login`) never auto-retries - see `oauth.RequiresUserAction()`.
 
 **Time handling**: All times converted to UTC. Session blocks round start times DOWN to current hour.
 

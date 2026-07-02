@@ -21,7 +21,7 @@ type WeeklyPrediction struct {
 // - Weekly window starts 7 days before reset time
 // - Burn rate = utilisation% / hours elapsed since window start
 // - This reflects actual usage patterns, not momentary session intensity
-func PredictWeeklyDepletion(oauthData *oauth.UsageData, _ float64, _ float64, now time.Time) WeeklyPrediction {
+func PredictWeeklyDepletion(oauthData *oauth.UsageData, now time.Time) WeeklyPrediction {
 	prediction := WeeklyPrediction{
 		Utilisation: oauthData.SevenDay.Utilisation,
 	}

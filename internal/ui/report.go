@@ -2,7 +2,8 @@ package ui
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -10,6 +11,9 @@ import (
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/pricing"
 )
+
+// reportRowFormat is the shared 9-column layout for report table rows.
+const reportRowFormat = "%-*s  %-30s  %12s  %12s  %16s  %18s  %10s  %16s  %12s\n"
 
 // ModelStats holds token statistics for a single model
 type ModelStats struct {
@@ -30,32 +34,27 @@ type ReportStats struct {
 
 // GenerateDailyReport generates a static daily usage report
 func GenerateDailyReport(entries []models.UsageEntry, timezone *time.Location) string {
-	if len(entries) == 0 {
-		return "No usage data found.\n"
-	}
-
-	stats := aggregateForReport(entries, "daily", timezone)
-	return renderReport(stats, "Daily", timezone)
+	return generateReport(entries, "daily", "Daily", timezone)
 }
 
 // GenerateWeeklyReport generates a static weekly usage report
 func GenerateWeeklyReport(entries []models.UsageEntry, timezone *time.Location) string {
-	if len(entries) == 0 {
-		return "No usage data found.\n"
-	}
-
-	stats := aggregateForReport(entries, "weekly", timezone)
-	return renderReport(stats, "Weekly", timezone)
+	return generateReport(entries, "weekly", "Weekly", timezone)
 }
 
 // GenerateMonthlyReport generates a static monthly usage report
 func GenerateMonthlyReport(entries []models.UsageEntry, timezone *time.Location) string {
+	return generateReport(entries, "monthly", "Monthly", timezone)
+}
+
+// generateReport aggregates entries for the given period and renders the table.
+func generateReport(entries []models.UsageEntry, period, periodType string, timezone *time.Location) string {
 	if len(entries) == 0 {
 		return "No usage data found.\n"
 	}
 
-	stats := aggregateForReport(entries, "monthly", timezone)
-	return renderReport(stats, "Monthly", timezone)
+	stats := aggregateForReport(entries, period, timezone)
+	return renderReport(stats, periodType, timezone)
 }
 
 // aggregateForReport aggregates entries by period (daily or monthly) and by model
@@ -118,8 +117,8 @@ func aggregateForReport(entries []models.UsageEntry, period string, timezone *ti
 		result = append(result, *s)
 	}
 
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Period.Before(result[j].Period)
+	slices.SortFunc(result, func(a, b ReportStats) int {
+		return a.Period.Compare(b.Period)
 	})
 
 	return result
@@ -150,7 +149,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 		periodLabel = "Date"
 		periodWidth = 12
 	}
-	fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %10s  %16s  %12s\n",
+	fmt.Fprintf(&sb, reportRowFormat,
 		periodWidth, periodLabel, "Model", "Input", "Output", "Cache Create", "Cache Read", "CacheHit%", "Total Tokens", "Est. Cost")
 	sb.WriteString(strings.Repeat("─", 154) + "\n")
 
@@ -211,7 +210,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 			}
 
 			modelHitRate := analysis.CalculateCacheHitRate(ms.InputTokens, ms.CacheCreationTokens, ms.CacheReadTokens)
-			fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %10s  %16s  %12s\n",
+			fmt.Fprintf(&sb, reportRowFormat,
 				periodWidth,
 				displayPeriod,
 				truncate(modelName, 30),
@@ -251,7 +250,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 			}
 
 			periodHitRate := analysis.CalculateCacheHitRate(periodInput, periodCacheCreate, periodCacheRead)
-			fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %10s  %16s  %12s\n",
+			fmt.Fprintf(&sb, reportRowFormat,
 				periodWidth,
 				"",
 				subtotalLabel,
@@ -271,7 +270,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 	// Grand total row
 	sb.WriteString(strings.Repeat("─", 154) + "\n")
 	totalHitRate := analysis.CalculateCacheHitRate(totalInput, totalCacheCreate, totalCacheRead)
-	fmt.Fprintf(&sb, "%-*s  %-30s  %12s  %12s  %16s  %18s  %10s  %16s  %12s\n",
+	fmt.Fprintf(&sb, reportRowFormat,
 		periodWidth,
 		"TOTAL", "",
 		formatNumber(totalInput),
@@ -294,12 +293,7 @@ func renderReport(stats []ReportStats, periodType string, timezone *time.Locatio
 
 // getSortedModelNames returns model names sorted alphabetically
 func getSortedModelNames(modelStats map[string]*ModelStats) []string {
-	names := make([]string, 0, len(modelStats))
-	for name := range modelStats {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(modelStats))
 }
 
 // getWeekStart returns the Monday of the ISO week containing the given time

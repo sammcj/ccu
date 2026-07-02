@@ -43,7 +43,7 @@ func TestRealDataPattern(t *testing.T) {
 				block.StartTime.Format("15:04"),
 				block.EndTime.Format("15:04"),
 				block.IsActive,
-				len(block.Entries))
+				block.MessageCount)
 		}
 	}
 

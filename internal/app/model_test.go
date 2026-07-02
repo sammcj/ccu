@@ -11,11 +11,11 @@ import (
 
 func TestNewModel_RefreshRateAdjustment(t *testing.T) {
 	tests := []struct {
-		name                string
-		inputRefreshRate    time.Duration
-		expectedMinRate     time.Duration // Minimum expected (JSONL mode)
-		expectedMaxRate     time.Duration // Maximum expected (OAuth mode)
-		note                string
+		name             string
+		inputRefreshRate time.Duration
+		expectedMinRate  time.Duration // Minimum expected (JSONL mode)
+		expectedMaxRate  time.Duration // Maximum expected (OAuth mode)
+		note             string
 	}{
 		{
 			name:             "default_30s_adjusted_for_oauth_if_available",
@@ -172,8 +172,8 @@ func TestIsOAuthSessionStale_ZeroRemainingTimeout(t *testing.T) {
 		{
 			name:               "remaining at 0 for first time - stale because session ended",
 			resetAt:            time.Now().Add(-6 * time.Hour), // Session ended 1hr ago
-			zeroRemainingStart: time.Time{},                   // Not set yet
-			wantStale:          true,                          // Will be stale because session ended
+			zeroRemainingStart: time.Time{},                    // Not set yet
+			wantStale:          true,                           // Will be stale because session ended
 		},
 		{
 			name:               "remaining at 0 for 3 minutes - stale (session window ended)",
@@ -256,16 +256,16 @@ func TestZeroRemainingTracking(t *testing.T) {
 	model := NewModel(config)
 
 	// Initially zero remaining start should be zero
-	assert.True(t, model.GetZeroRemainingStart().IsZero(), "Initial zero remaining start should be zero")
+	assert.True(t, model.zeroRemainingStart.IsZero(), "Initial zero remaining start should be zero")
 
 	// Set zero remaining start
 	now := time.Now()
 	model.SetZeroRemainingStart(now)
-	assert.Equal(t, now, model.GetZeroRemainingStart(), "Should store zero remaining start time")
+	assert.Equal(t, now, model.zeroRemainingStart, "Should store zero remaining start time")
 
 	// Clear zero remaining start
 	model.ClearZeroRemainingStart()
-	assert.True(t, model.GetZeroRemainingStart().IsZero(), "Should clear zero remaining start")
+	assert.True(t, model.zeroRemainingStart.IsZero(), "Should clear zero remaining start")
 }
 
 func TestForceRefreshTracking(t *testing.T) {
@@ -289,22 +289,22 @@ func TestLastTickTimeTracking(t *testing.T) {
 	model := NewModel(config)
 
 	// Initially lastTickTime should be zero
-	assert.True(t, model.GetLastTickTime().IsZero(), "Initial lastTickTime should be zero")
+	assert.True(t, model.lastTickTime.IsZero(), "Initial lastTickTime should be zero")
 
 	// Set lastTickTime
 	now := time.Now()
 	model.SetLastTickTime(now)
-	assert.Equal(t, now, model.GetLastTickTime(), "Should store lastTickTime")
+	assert.Equal(t, now, model.lastTickTime, "Should store lastTickTime")
 }
 
 func TestTimeJumpDetection(t *testing.T) {
 	tests := []struct {
-		name           string
-		lastTickTime   time.Time
-		currentTime    time.Time
-		refreshRate    time.Duration
-		expectForce    bool
-		description    string
+		name         string
+		lastTickTime time.Time
+		currentTime  time.Time
+		refreshRate  time.Duration
+		expectForce  bool
+		description  string
 	}{
 		{
 			name:         "normal tick interval - no force refresh",
@@ -439,11 +439,12 @@ func TestManualRefreshRateLimit(t *testing.T) {
 
 func TestShouldRetryOAuth(t *testing.T) {
 	tests := []struct {
-		name          string
-		disabled      bool
-		disabledAt    time.Time
-		reason        string
-		expectRetry   bool
+		name        string
+		disabled    bool
+		disabledAt  time.Time
+		reason      string
+		userAction  bool
+		expectRetry bool
 	}{
 		{
 			name:        "not disabled returns false",
@@ -468,14 +469,16 @@ func TestShouldRetryOAuth(t *testing.T) {
 			name:        "token expired retries after cooldown",
 			disabled:    true,
 			disabledAt:  time.Now().Add(-10 * time.Minute),
-			reason:      "token expired",
+			reason:      oauth.ErrTokenExpired.Error(),
+			userAction:  oauth.RequiresUserAction(oauth.ErrTokenExpired),
 			expectRetry: true,
 		},
 		{
-			name:        "re-authenticate never retries",
+			name:        "missing scope never retries",
 			disabled:    true,
 			disabledAt:  time.Now().Add(-10 * time.Minute),
-			reason:      "please re-authenticate with claude login",
+			reason:      oauth.ErrMissingScope.Error(),
+			userAction:  oauth.RequiresUserAction(oauth.ErrMissingScope),
 			expectRetry: false,
 		},
 		{
@@ -494,6 +497,7 @@ func TestShouldRetryOAuth(t *testing.T) {
 			model.oauthDisabled = tt.disabled
 			model.oauthDisabledAt = tt.disabledAt
 			model.oauthDisableReason = tt.reason
+			model.oauthRequiresUserAction = tt.userAction
 
 			assert.Equal(t, tt.expectRetry, model.ShouldRetryOAuth())
 		})
@@ -505,11 +509,12 @@ func TestReenableOAuth(t *testing.T) {
 	model := NewModel(config)
 
 	// Disable OAuth first
-	model.DisableOAuth("test error")
+	model.DisableOAuth("test error", true)
 	model.MarkOAuthErrorLogged()
 
 	assert.True(t, model.IsOAuthDisabled())
-	assert.Equal(t, "test error", model.GetOAuthDisableReason())
+	assert.Equal(t, "test error", model.oauthDisableReason)
+	assert.True(t, model.oauthRequiresUserAction)
 	assert.True(t, model.HasLoggedOAuthError())
 	assert.False(t, model.oauthDisabledAt.IsZero())
 
@@ -517,7 +522,8 @@ func TestReenableOAuth(t *testing.T) {
 	model.ReenableOAuth()
 
 	assert.False(t, model.IsOAuthDisabled())
-	assert.Empty(t, model.GetOAuthDisableReason())
+	assert.Empty(t, model.oauthDisableReason)
+	assert.False(t, model.oauthRequiresUserAction)
 	assert.False(t, model.HasLoggedOAuthError())
 	assert.True(t, model.oauthDisabledAt.IsZero())
 }

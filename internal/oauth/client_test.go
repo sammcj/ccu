@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"fmt"
 	"runtime"
 	"testing"
 	"time"
@@ -258,6 +259,92 @@ func TestGetRetryAfter(t *testing.T) {
 	})
 }
 
+func TestIsAvailableCaching(t *testing.T) {
+	origCheck := checkKeychain
+	t.Cleanup(func() {
+		availabilityMu.Lock()
+		checkKeychain = origCheck
+		availabilityAt = time.Time{}
+		availabilityMu.Unlock()
+	})
+
+	resetCacheAge := func(age time.Duration) {
+		availabilityMu.Lock()
+		if age < 0 {
+			availabilityAt = time.Time{}
+		} else {
+			availabilityAt = time.Now().Add(-age)
+		}
+		availabilityMu.Unlock()
+	}
+
+	calls := 0
+	checkKeychain = func() bool {
+		calls++
+		return true
+	}
+
+	resetCacheAge(-1) // Empty cache forces a fresh check
+	assert.True(t, IsAvailable())
+	assert.True(t, IsAvailable(), "cached positive result should be returned")
+	assert.Equal(t, 1, calls, "second call within TTL should not re-check the keychain")
+
+	// Expire the cache and flip the underlying result
+	checkKeychain = func() bool {
+		calls++
+		return false
+	}
+	resetCacheAge(availabilityTTL + time.Second)
+	assert.False(t, IsAvailable(), "expired cache should trigger a fresh check")
+	assert.False(t, IsAvailable(), "negative results should be cached too")
+	assert.Equal(t, 2, calls, "only one fresh check after expiry")
+}
+
+func TestRequiresUserAction(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "token expired auto-retries (Claude Code refreshes the token)",
+			err:      ErrTokenExpired,
+			expected: false,
+		},
+		{
+			name:     "missing scope requires re-authentication",
+			err:      ErrMissingScope,
+			expected: true,
+		},
+		{
+			name:     "wrapped missing scope is still detected",
+			err:      fmt.Errorf("failed to retrieve OAuth credentials: %w", ErrMissingScope),
+			expected: true,
+		},
+		{
+			name:     "rate limit error does not require user action",
+			err:      &RateLimitError{},
+			expected: false,
+		},
+		{
+			name:     "generic error does not require user action",
+			err:      &testError{msg: "boom"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, RequiresUserAction(tt.err))
+		})
+	}
+}
+
 // testError is a simple error type for testing
 type testError struct {
 	msg string
@@ -265,4 +352,90 @@ type testError struct {
 
 func (e *testError) Error() string {
 	return e.msg
+}
+
+func TestEffectiveFiveHour(t *testing.T) {
+	now := time.Date(2025, 12, 3, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name         string
+		resetsAt     string
+		utilisation  float64
+		wantPercent  float64
+		wantResetsAt time.Time
+		wantStale    bool
+	}{
+		{
+			name:         "not rolled over - raw utilisation and reset time",
+			resetsAt:     now.Add(2 * time.Hour).Format(time.RFC3339),
+			utilisation:  87.5,
+			wantPercent:  87.5,
+			wantResetsAt: now.Add(2 * time.Hour),
+			wantStale:    false,
+		},
+		{
+			name:         "rolled over 30min ago with implausibly high utilisation - stale, clamped to 0",
+			resetsAt:     now.Add(-30 * time.Minute).Format(time.RFC3339),
+			utilisation:  95,
+			wantPercent:  0,
+			wantResetsAt: now.Add(4*time.Hour + 30*time.Minute),
+			wantStale:    true,
+		},
+		{
+			name:         "rolled over 1hr ago with plausible utilisation - kept, reset advanced 5h",
+			resetsAt:     now.Add(-1 * time.Hour).Format(time.RFC3339),
+			utilisation:  15,
+			wantPercent:  15,
+			wantResetsAt: now.Add(4 * time.Hour),
+			wantStale:    false,
+		},
+		{
+			name:         "rolled over 4hr ago at the plausibility boundary - not stale (max ~80%, doubled)",
+			resetsAt:     now.Add(-4 * time.Hour).Format(time.RFC3339),
+			utilisation:  80,
+			wantPercent:  80,
+			wantResetsAt: now.Add(1 * time.Hour),
+			wantStale:    false,
+		},
+		{
+			name:        "unparseable resets_at - raw utilisation, not stale",
+			resetsAt:    "not-a-timestamp",
+			utilisation: 42,
+			wantPercent: 42,
+			wantStale:   false,
+		},
+		{
+			name:         "just rolled over - 1% elapsed floor allows up to 2%",
+			resetsAt:     now.Add(-time.Second).Format(time.RFC3339),
+			utilisation:  1.5,
+			wantPercent:  1.5,
+			wantResetsAt: now.Add(5*time.Hour - time.Second),
+			wantStale:    false,
+		},
+		{
+			name:         "just rolled over - above doubled 1% floor is stale",
+			resetsAt:     now.Add(-time.Second).Format(time.RFC3339),
+			utilisation:  2.5,
+			wantPercent:  0,
+			wantResetsAt: now.Add(5*time.Hour - time.Second),
+			wantStale:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := &UsageData{}
+			data.FiveHour.ResetsAt = tt.resetsAt
+			data.FiveHour.Utilisation = tt.utilisation
+
+			percent, resetsAt, stale := data.EffectiveFiveHour(now)
+
+			assert.Equal(t, tt.wantPercent, percent)
+			assert.Equal(t, tt.wantStale, stale)
+			if !tt.wantResetsAt.IsZero() {
+				assert.True(t, resetsAt.Equal(tt.wantResetsAt),
+					"resetsAt = %v, want %v", resetsAt, tt.wantResetsAt)
+			}
+		})
+	}
 }

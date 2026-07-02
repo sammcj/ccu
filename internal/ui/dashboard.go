@@ -39,6 +39,13 @@ func formatRow(emoji, label, bar, value, suffix string) string {
 	return b.String()
 }
 
+// renderBar builds a progress bar of the given total width (including the
+// surrounding brackets), filled proportionally to percent and clamped to [0, 100].
+func renderBar(percent float64, width int) string {
+	filled := max(min(int((percent/100)*float64(width-2)), width-2), 0)
+	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-2-filled) + "]"
+}
+
 // dayOrdinalSuffix returns the English ordinal suffix for a day number (st, nd, rd, th).
 func dayOrdinalSuffix(day int) string {
 	switch {
@@ -87,7 +94,7 @@ func RenderDashboard(data DashboardData) string {
 
 	// Calculate burn rates (tokens and cost)
 	burnRate := analysis.CalculateBurnRate(data.AllSessions, now)
-	costBurnRate := calculateCostBurnRateFromSessions(data.AllSessions, now)
+	costBurnRate := analysis.CalculateHourlyCostBurnRate(data.AllSessions, now)
 
 	// Get session reset time for burn rate display
 	var sessionResetTime time.Time
@@ -123,7 +130,7 @@ func RenderDashboard(data DashboardData) string {
 
 	// Prediction -- OAuth-only
 	if data.OAuthData != nil {
-		output = append(output, renderPredictionWithOAuth(data.OAuthData, data.CurrentSession, costBurnRate, data.Limits, now, data.Config.ShowWeekly))
+		output = append(output, renderPredictionWithOAuth(data.OAuthData, data.CurrentSession, now, data.Config.ShowWeekly))
 	}
 
 	// Limit warnings -- OAuth-only
@@ -145,13 +152,10 @@ func getSessionDistributionString(session *models.SessionBlock) string {
 		return ""
 	}
 
-	// Calculate cost distribution by model
-	modelCosts := make(map[string]float64)
+	// Calculate cost distribution from per-model aggregates (accumulated at ingest)
 	totalCost := 0.0
-
-	for _, entry := range session.Entries {
-		modelCosts[entry.Model] += entry.CostUSD
-		totalCost += entry.CostUSD
+	for _, stats := range session.PerModelStats {
+		totalCost += stats.CostUSD
 	}
 
 	if totalCost == 0 {
@@ -165,9 +169,9 @@ func getSessionDistributionString(session *models.SessionBlock) string {
 	}
 
 	var sortedModels []modelData
-	for model, cost := range modelCosts {
-		if cost > 0 {
-			percent := (cost / totalCost) * 100
+	for model, stats := range session.PerModelStats {
+		if stats.CostUSD > 0 {
+			percent := (stats.CostUSD / totalCost) * 100
 			sortedModels = append(sortedModels, modelData{
 				name:    model,
 				percent: percent,
@@ -234,14 +238,10 @@ func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, 
 
 	// Create normal sized bars for each metric
 	// First bar aligns with other bars, second starts where second column info starts
-	normalBarWidth := barWidth
-
-	tokenFilled := max(min(int((tokenPercent/100)*float64(normalBarWidth-2)), normalBarWidth-2), 0)
-	tokenBar := "[" + strings.Repeat("█", tokenFilled) + strings.Repeat("░", normalBarWidth-2-tokenFilled) + "]"
+	tokenBar := renderBar(tokenPercent, barWidth)
 	tokenStyle := GetPercentageStyle(tokenPercent)
 
-	costFilled := max(min(int((costPercent/100)*float64(normalBarWidth-2)), normalBarWidth-2), 0)
-	costBar := "[" + strings.Repeat("█", costFilled) + strings.Repeat("░", normalBarWidth-2-costFilled) + "]"
+	costBar := renderBar(costPercent, barWidth)
 	costStyle := GetPercentageStyle(costPercent)
 
 	// Cost burn rate in dollars per hour for readability
@@ -366,6 +366,32 @@ func renderSessionFallback(session *models.SessionBlock, sessionDistribution str
 	return lines
 }
 
+// weeklyUsageRow renders one weekly usage row with the shared green-to-red
+// gradient applied to both the bar and the percentage.
+func weeklyUsageRow(label string, percent float64, suffix string, barWidth int) string {
+	style := GetPercentageStyle(percent)
+	return formatRow(
+		"🗓️",
+		label,
+		style.Render(renderBar(percent, barWidth)),
+		style.Render(fmt.Sprintf("%.1f%%", percent)),
+		suffix,
+	)
+}
+
+// weeklyResetSuffix formats a weekly reset time as "[Resets: Mon 3:04 PM]".
+// Returns empty string when the reset time cannot be parsed.
+func weeklyResetSuffix(resetsAt string) string {
+	resetTime, err := oauth.ParseResetTime(resetsAt)
+	if err != nil {
+		return ""
+	}
+	whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
+	return whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
+		resetTime.Local().Format("Mon"),
+		resetTime.Local().Format("3:04 PM")))
+}
+
 // renderWeeklyUsageFromOAuth renders weekly usage from OAuth data (matching JSONL style)
 func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits, barWidth int) []string {
 	var lines []string
@@ -374,91 +400,26 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 	weeklyLimits := models.GetWeeklyLimits(strings.ToLower(limits.PlanName))
 
 	// Combined "All models" weekly limit (always present in API response)
-	{
-		allModelsPercent := oauthData.SevenDay.Utilisation
-		filled := min(int((allModelsPercent/100)*float64(barWidth-2)), barWidth-2)
-		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
-
-		// Parse reset time
-		resetTime, err := oauth.ParseResetTime(oauthData.SevenDay.ResetsAt)
-		resetStr := ""
-		whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
-		if err == nil {
-			resetStr = whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
-				resetTime.Local().Format("Mon"),
-				resetTime.Local().Format("3:04 PM")))
-		}
-
-		// Use green-to-red gradient for both bar and percentage
-		barStyle := GetPercentageStyle(allModelsPercent)
-		percentStyle := GetPercentageStyle(allModelsPercent)
-
-		line := formatRow(
-			"🗓️",
-			"Weekly - All Models:",
-			barStyle.Render(bar),
-			percentStyle.Render(fmt.Sprintf("%.1f%%", allModelsPercent)),
-			resetStr,
-		)
-		lines = append(lines, line)
-	}
+	lines = append(lines, weeklyUsageRow("Weekly - All Models:", oauthData.SevenDay.Utilisation,
+		weeklyResetSuffix(oauthData.SevenDay.ResetsAt), barWidth))
 
 	// Sonnet
 	if oauthData.SevenDaySonnet != nil {
 		sonnetPercent := oauthData.SevenDaySonnet.Utilisation
-		// Convert to filled bar amount
-		filled := min(int((sonnetPercent/100)*float64(barWidth-2)), barWidth-2)
-		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
-
 		limitHours := weeklyLimits.SonnetHours
 		usedHours := (sonnetPercent / 100) * limitHours
 
-		// Use green-to-red gradient for both bar and percentage
-		barStyle := GetPercentageStyle(sonnetPercent)
-		percentStyle := GetPercentageStyle(sonnetPercent)
-
 		// Hours value in parentheses
 		hoursValue := GetPercentageStyle(sonnetPercent).Render(fmt.Sprintf("(%.1f / %.1f hrs)", usedHours, limitHours))
-
-		line := formatRow(
-			"🗓️",
-			"Weekly - Sonnet:",
-			barStyle.Render(bar),
-			percentStyle.Render(fmt.Sprintf("%.1f%%", sonnetPercent)),
-			hoursValue,
-		)
-		lines = append(lines, line)
+		lines = append(lines, weeklyUsageRow("Weekly - Sonnet:", sonnetPercent, hoursValue, barWidth))
 	}
 
 	// Opus - only show if API returns SevenDayOpus with a reset time (indicates enforced limit)
 	// This auto-detects when Anthropic enables Opus weekly limits without requiring code changes
+	// Shows reset time instead of fake hours (we don't know Anthropic's actual limit)
 	if oauthData.SevenDayOpus != nil && oauthData.SevenDayOpus.ResetsAt != nil {
-		opusPercent := oauthData.SevenDayOpus.Utilisation
-		filled := min(int((opusPercent/100)*float64(barWidth-2)), barWidth-2)
-		bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
-
-		// Use green-to-red gradient for both bar and percentage
-		barStyle := GetPercentageStyle(opusPercent)
-		percentStyle := GetPercentageStyle(opusPercent)
-
-		// Show reset time instead of fake hours (we don't know Anthropic's actual limit)
-		resetTime, err := oauth.ParseResetTime(*oauthData.SevenDayOpus.ResetsAt)
-		resetStr := ""
-		if err == nil {
-			whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
-			resetStr = whiteStyle.Render(fmt.Sprintf("[Resets: %s %s]",
-				resetTime.Local().Format("Mon"),
-				resetTime.Local().Format("3:04 PM")))
-		}
-
-		line := formatRow(
-			"🗓️",
-			"Weekly - Opus:",
-			barStyle.Render(bar),
-			percentStyle.Render(fmt.Sprintf("%.1f%%", opusPercent)),
-			resetStr,
-		)
-		lines = append(lines, line)
+		lines = append(lines, weeklyUsageRow("Weekly - Opus:", oauthData.SevenDayOpus.Utilisation,
+			weeklyResetSuffix(*oauthData.SevenDayOpus.ResetsAt), barWidth))
 	}
 
 	return lines
@@ -468,42 +429,14 @@ func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits
 func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistribution string, barWidth int, now time.Time) []string {
 	var lines []string
 
-	resetTime, _ := oauth.ParseResetTime(oauthData.FiveHour.ResetsAt)
-
-	// Check if the session has recently rolled over (ResetsAt is in the past)
-	// When this happens, the Utilisation value may be stale (from the old session)
-	sessionJustRolledOver := !resetTime.After(now)
-	if sessionJustRolledOver {
-		resetTime = resetTime.Add(5 * time.Hour)
+	// Utilisation with the session-rollover staleness clamp applied
+	percent, resetTime, stale := oauthData.EffectiveFiveHour(now)
+	if stale {
+		// Clear distribution since it's also from the old session
+		sessionDistribution = ""
 	}
 
-	percent := oauthData.FiveHour.Utilisation
-
-	// If the session just rolled over and utilisation is suspiciously high for a new session,
-	// the data is likely stale. Calculate expected max utilisation based on elapsed time.
-	// A new session should have low utilisation proportional to time elapsed.
-	if sessionJustRolledOver {
-		// Calculate how long since the session started (time elapsed since ResetsAt - 5h)
-		sessionStart := resetTime.Add(-5 * time.Hour)
-		elapsed := now.Sub(sessionStart)
-
-		// Maximum reasonable utilisation = (elapsed / 5 hours) * 100
-		// e.g., 30 minutes into a 5-hour session = max 10% utilisation
-		maxReasonablePercent := (elapsed.Hours() / 5.0) * 100
-		if maxReasonablePercent < 1 {
-			maxReasonablePercent = 1 // Floor at 1%
-		}
-
-		// If reported utilisation is much higher than possible, it's stale data
-		if percent > maxReasonablePercent*2 {
-			// Clear distribution since it's also from the old session
-			sessionDistribution = ""
-			percent = 0 // Show 0% for new session until API updates
-		}
-	}
-
-	filled := min(int((percent/100)*float64(barWidth-2)), barWidth-2)
-	bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
+	bar := renderBar(percent, barWidth)
 
 	// Use same green-to-red colour for both bar and percentage
 	usageStyle := GetPercentageStyle(percent)
@@ -555,28 +488,9 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 }
 
 // renderPredictionWithOAuth renders prediction combining OAuth reset time with JSONL burn rate
-func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.SessionBlock, costBurnRate float64, limits models.Limits, now time.Time, showWeekly bool) string {
-	resetTime, _ := oauth.ParseResetTime(oauthData.FiveHour.ResetsAt)
-
-	// Check if the session has recently rolled over (ResetsAt is in the past)
-	sessionJustRolledOver := !resetTime.After(now)
-	if sessionJustRolledOver {
-		resetTime = resetTime.Add(5 * time.Hour)
-	}
-
-	// Get utilisation, but check if it's stale after a session rollover
-	utilisationPercent := oauthData.FiveHour.Utilisation
-	if sessionJustRolledOver {
-		sessionStart := resetTime.Add(-5 * time.Hour)
-		elapsed := now.Sub(sessionStart)
-		maxReasonablePercent := (elapsed.Hours() / 5.0) * 100
-		if maxReasonablePercent < 1 {
-			maxReasonablePercent = 1
-		}
-		if utilisationPercent > maxReasonablePercent*2 {
-			utilisationPercent = 0 // Stale data, treat as new session
-		}
-	}
+func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.SessionBlock, now time.Time, showWeekly bool) string {
+	// Utilisation with the session-rollover staleness clamp applied
+	utilisationPercent, resetTime, _ := oauthData.EffectiveFiveHour(now)
 
 	purpleStyle := lipgloss.NewStyle().Foreground(ColorPrediction)
 	pinkStyle := lipgloss.NewStyle().Foreground(ColorOpus)
@@ -645,7 +559,7 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	// Build weekly prediction part - only show if there's a problem (not OK)
 	var weeklyPart string
 	if showWeekly {
-		weeklyPrediction := analysis.PredictWeeklyDepletion(oauthData, costBurnRate, limits.CostLimitUSD, now)
+		weeklyPrediction := analysis.PredictWeeklyDepletion(oauthData, now)
 		if !weeklyPrediction.ResetTime.IsZero() {
 			var weeklyStr string
 			var weeklyStyle lipgloss.Style
@@ -730,17 +644,14 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 
 // renderCacheHitRateLine renders a cache hit rate row, styled to match other dashboard rows.
 // Cache hit rate is "good when high", so the colour gradient is inverted: 100% → green, 0% → red.
-func renderCacheHitRateLine(emoji, label string, rate float64, barWidth int) string {
-	filled := max(min(int((rate/100)*float64(barWidth-2)), barWidth-2), 0)
-	bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-2-filled) + "]"
-
+func renderCacheHitRateLine(label string, rate float64, barWidth int) string {
 	// Cache hit thresholds: >=93% green, >=90% yellow, >=85% orange, <85% red
 	style := GetCacheHitRateStyle(rate)
 
 	return formatRow(
-		emoji,
+		"♻️",
 		label,
-		style.Render(bar),
+		style.Render(renderBar(rate, barWidth)),
 		style.Render(fmt.Sprintf("%.1f%%", rate)),
 		"",
 	)
@@ -753,16 +664,16 @@ func renderSessionCacheHitRate(session *models.SessionBlock, barWidth int) strin
 		return ""
 	}
 	var input, cacheCreate, cacheRead int
-	for _, e := range session.Entries {
-		input += e.InputTokens
-		cacheCreate += e.CacheCreationTokens
-		cacheRead += e.CacheReadTokens
+	for _, stats := range session.PerModelStats {
+		input += stats.InputTokens
+		cacheCreate += stats.CacheCreationTokens
+		cacheRead += stats.CacheReadTokens
 	}
 	if input+cacheCreate+cacheRead == 0 {
 		return ""
 	}
 	rate := analysis.CalculateCacheHitRate(input, cacheCreate, cacheRead)
-	return renderCacheHitRateLine("♻️", "Session - Cache Hit:", rate, barWidth)
+	return renderCacheHitRateLine("Session - Cache Hit:", rate, barWidth)
 }
 
 // weeklyCacheHitWarnThreshold is the rate below which the weekly cache hit row is shown.
@@ -779,10 +690,10 @@ func renderWeeklyCacheHitRate(blocks []models.SessionBlock, now time.Time, barWi
 		if b.IsGap || b.StartTime.Before(cutoff) {
 			continue
 		}
-		for _, e := range b.Entries {
-			input += e.InputTokens
-			cacheCreate += e.CacheCreationTokens
-			cacheRead += e.CacheReadTokens
+		for _, stats := range b.PerModelStats {
+			input += stats.InputTokens
+			cacheCreate += stats.CacheCreationTokens
+			cacheRead += stats.CacheReadTokens
 		}
 	}
 	if input+cacheCreate+cacheRead == 0 {
@@ -792,28 +703,15 @@ func renderWeeklyCacheHitRate(blocks []models.SessionBlock, now time.Time, barWi
 	if rate >= weeklyCacheHitWarnThreshold {
 		return ""
 	}
-	return renderCacheHitRateLine("♻️", "Weekly - Cache Hit:", rate, barWidth)
+	return renderCacheHitRateLine("Weekly - Cache Hit:", rate, barWidth)
 }
 
 // renderOAuthLimitWarning renders warning if OAuth limits are approaching
 func renderOAuthLimitWarning(oauthData *oauth.UsageData, now time.Time) string {
-	percent := oauthData.FiveHour.Utilisation
-
-	// Check if the session just rolled over - if so, high utilisation is likely stale
-	resetTime, _ := oauth.ParseResetTime(oauthData.FiveHour.ResetsAt)
-	if !resetTime.After(now) {
-		// Session rolled over - check if utilisation is plausible
-		sessionStart := resetTime
-		elapsed := now.Sub(sessionStart)
-		maxReasonablePercent := (elapsed.Hours() / 5.0) * 100
-		if maxReasonablePercent < 1 {
-			maxReasonablePercent = 1
-		}
-
-		// If utilisation is much higher than possible, it's stale - don't warn
-		if percent > maxReasonablePercent*2 {
-			return ""
-		}
+	// If the session just rolled over, high utilisation is likely stale - don't warn
+	percent, _, stale := oauthData.EffectiveFiveHour(now)
+	if stale {
+		return ""
 	}
 
 	if percent > 95 {
@@ -825,61 +723,4 @@ func renderOAuthLimitWarning(oauthData *oauth.UsageData, now time.Time) string {
 	}
 
 	return ""
-}
-
-// calculateCostBurnRateFromSessions calculates cost burn rate using proportional overlap (like CalculateBurnRate but for cost)
-func calculateCostBurnRateFromSessions(blocks []models.SessionBlock, currentTime time.Time) float64 {
-	oneHourAgo := currentTime.Add(-1 * time.Hour)
-	totalCost := 0.0
-
-	for _, block := range blocks {
-		if block.IsGap {
-			continue
-		}
-
-		// Determine actual end time
-		sessionEnd := currentTime
-		if !block.IsActive && block.ActualEndTime != nil {
-			sessionEnd = *block.ActualEndTime
-		} else if !block.IsActive {
-			sessionEnd = block.EndTime
-		}
-
-		// Check if session overlaps with last hour
-		if sessionEnd.Before(oneHourAgo) {
-			continue // Session ended before the hour window
-		}
-
-		if block.StartTime.After(currentTime) {
-			continue // Session hasn't started yet
-		}
-
-		// Calculate overlap period
-		sessionStartInHour := block.StartTime
-		if oneHourAgo.After(sessionStartInHour) {
-			sessionStartInHour = oneHourAgo
-		}
-
-		sessionEndInHour := sessionEnd
-		if currentTime.Before(sessionEndInHour) {
-			sessionEndInHour = currentTime
-		}
-
-		if sessionEndInHour.Before(sessionStartInHour) {
-			continue // No overlap
-		}
-
-		// Calculate proportion of session in the hour window
-		totalSessionDuration := sessionEnd.Sub(block.StartTime).Minutes()
-		hourDuration := sessionEndInHour.Sub(sessionStartInHour).Minutes()
-
-		if totalSessionDuration > 0 {
-			proportion := hourDuration / totalSessionDuration
-			costInHour := block.CostUSD * proportion
-			totalCost += costInHour
-		}
-	}
-
-	// Divide by 60 to get cost per minute (matching token burn rate calculation)
-	return totalCost / 60.0
 }

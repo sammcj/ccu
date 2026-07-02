@@ -5,86 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sammcj/ccu/internal/analysis"
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/oauth"
 	"github.com/stretchr/testify/assert"
 )
-
-// TestStaleUtilisationDetection tests that stale utilisation values are detected after session rollover
-func TestStaleUtilisationDetection(t *testing.T) {
-	tests := []struct {
-		name                 string
-		resetTimeOffset      time.Duration // Offset from "now"
-		utilisation          float64
-		expectStaleDetection bool
-	}{
-		{
-			name:                 "session 30min old with 100% utilisation - stale",
-			resetTimeOffset:      -30 * time.Minute,
-			utilisation:          100.0,
-			expectStaleDetection: true,
-		},
-		{
-			name:                 "session 30min old with 5% utilisation - not stale",
-			resetTimeOffset:      -30 * time.Minute,
-			utilisation:          5.0,
-			expectStaleDetection: false,
-		},
-		{
-			name:                 "session 1hr old with 50% utilisation - stale (max ~20%)",
-			resetTimeOffset:      -1 * time.Hour,
-			utilisation:          50.0,
-			expectStaleDetection: true,
-		},
-		{
-			name:                 "session 1hr old with 15% utilisation - not stale",
-			resetTimeOffset:      -1 * time.Hour,
-			utilisation:          15.0,
-			expectStaleDetection: false,
-		},
-		{
-			name:                 "session 4hr old with 80% utilisation - not stale (max ~80%)",
-			resetTimeOffset:      -4 * time.Hour,
-			utilisation:          80.0,
-			expectStaleDetection: false,
-		},
-		{
-			name:                 "reset time in future - utilisation is current, not stale",
-			resetTimeOffset:      1 * time.Hour,
-			utilisation:          95.0,
-			expectStaleDetection: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			now := time.Now()
-			resetTime := now.Add(tt.resetTimeOffset)
-
-			oauthData := &oauth.UsageData{}
-			oauthData.FiveHour.ResetsAt = resetTime.Format(time.RFC3339Nano)
-			oauthData.FiveHour.Utilisation = tt.utilisation
-
-			// Simulate the stale detection logic from renderSessionMetricsFromOAuth
-			sessionJustRolledOver := !resetTime.After(now)
-
-			isStale := false
-			if sessionJustRolledOver {
-				elapsed := now.Sub(resetTime)
-				maxReasonablePercent := (elapsed.Hours() / 5.0) * 100
-				if maxReasonablePercent < 1 {
-					maxReasonablePercent = 1
-				}
-				if tt.utilisation > maxReasonablePercent*2 {
-					isStale = true
-				}
-			}
-
-			assert.Equal(t, tt.expectStaleDetection, isStale,
-				"Stale detection mismatch for %s", tt.name)
-		})
-	}
-}
 
 func TestFormatModelNameSimple(t *testing.T) {
 	tests := []struct {
@@ -210,9 +135,8 @@ func TestPredictionAfterSessionReset(t *testing.T) {
 	oauthData.SevenDay.Utilisation = 20
 
 	session := &models.SessionBlock{IsActive: true}
-	limits := models.Limits{CostLimitUSD: 100}
 
-	result := renderPredictionWithOAuth(oauthData, session, 0, limits, now, false)
+	result := renderPredictionWithOAuth(oauthData, session, now, false)
 
 	// Session start: 14:00 - 5h = 09:00. Elapsed: 3h = 180min.
 	// Rate: 60%/180min = 0.333%/min. Remaining: 40%.
@@ -236,9 +160,8 @@ func TestPredictionNotShownWhenFarAfterReset(t *testing.T) {
 	oauthData.SevenDay.Utilisation = 5
 
 	session := &models.SessionBlock{IsActive: true}
-	limits := models.Limits{CostLimitUSD: 100}
 
-	result := renderPredictionWithOAuth(oauthData, session, 0, limits, now, false)
+	result := renderPredictionWithOAuth(oauthData, session, now, false)
 
 	// Low usage rate = depletion far after reset. Should not show session prediction or "after reset".
 	assert.NotContains(t, result, "Session limit:")
@@ -251,7 +174,7 @@ func TestWeeklyPredictionAfterReset(t *testing.T) {
 	// lands just after the weekly reset.
 	weeklyReset := time.Date(2025, 12, 7, 10, 0, 0, 0, time.UTC)
 	weekStart := weeklyReset.Add(-7 * 24 * time.Hour) // Nov 30 10:00 UTC
-	now := weekStart.Add(6 * 24 * time.Hour)           // Dec 6 10:00 UTC (6 days in)
+	now := weekStart.Add(6 * 24 * time.Hour)          // Dec 6 10:00 UTC (6 days in)
 
 	// 85% used in 6 days = ~14.17%/day. Remaining 15% takes ~1.06 days.
 	// Depletion: Dec 6 10:00 + ~25.4h = ~Dec 7 11:24 (after Dec 7 10:00 reset).
@@ -266,9 +189,8 @@ func TestWeeklyPredictionAfterReset(t *testing.T) {
 	oauthData.SevenDay.Utilisation = 85
 
 	session := &models.SessionBlock{IsActive: true}
-	limits := models.Limits{CostLimitUSD: 100}
 
-	result := renderPredictionWithOAuth(oauthData, session, 0, limits, now, true)
+	result := renderPredictionWithOAuth(oauthData, session, now, true)
 
 	assert.Contains(t, result, "after reset", "should show weekly near-miss after reset")
 	assert.Contains(t, result, "Weekly limit:", "should contain weekly limit label")
@@ -291,12 +213,97 @@ func TestWeeklyPredictionDateFormat(t *testing.T) {
 	oauthData.SevenDay.Utilisation = 90
 
 	session := &models.SessionBlock{IsActive: true}
-	limits := models.Limits{CostLimitUSD: 100}
 
-	result := renderPredictionWithOAuth(oauthData, session, 0, limits, now, true)
+	result := renderPredictionWithOAuth(oauthData, session, now, true)
 
 	// Should contain ordinal day format (e.g. "8th" or "9th" depending on exact calculation)
 	assert.Contains(t, result, "Weekly limit:", "should contain weekly limit label")
 	// The depletion date should have an ordinal suffix
 	assert.Regexp(t, `\d{1,2}(st|nd|rd|th)`, result, "should contain ordinal day suffix")
+}
+
+func TestGetSessionDistributionString(t *testing.T) {
+	base := time.Date(2025, 12, 3, 12, 30, 0, 0, time.UTC)
+
+	entries := []models.UsageEntry{
+		{Timestamp: base, Model: "claude-opus-4-5-20251101", CostUSD: 2.0, InputTokens: 100, OutputTokens: 50},
+		{Timestamp: base.Add(5 * time.Minute), Model: "claude-sonnet-4-20250514", CostUSD: 0.5, InputTokens: 100, OutputTokens: 50},
+		{Timestamp: base.Add(10 * time.Minute), Model: "claude-sonnet-4", CostUSD: 0.5, InputTokens: 100, OutputTokens: 50},
+	}
+	blocks := analysis.CreateSessionBlocks(entries)
+	assert.Len(t, blocks, 1)
+
+	got := getSessionDistributionString(&blocks[0])
+
+	// Cost-ranked descending with normalised, formatted names; both sonnet raw
+	// names merge into one share via NormaliseModelName.
+	expected := "[" +
+		GetModelStyle("claude-opus-4-5").Render("Opus 4.5") + ": 66.7%, " +
+		GetModelStyle("claude-sonnet-4").Render("Sonnet 4") + ": 33.3%]"
+	assert.Equal(t, expected, got)
+}
+
+func TestGetSessionDistributionStringEmpty(t *testing.T) {
+	assert.Empty(t, getSessionDistributionString(nil))
+	assert.Empty(t, getSessionDistributionString(&models.SessionBlock{}))
+}
+
+func TestRenderSessionCacheHitRate(t *testing.T) {
+	base := time.Date(2025, 12, 3, 12, 30, 0, 0, time.UTC)
+	const barWidth = 45
+
+	entries := []models.UsageEntry{
+		{Timestamp: base, Model: "claude-opus-4-5", InputTokens: 60, CacheCreationTokens: 200, CacheReadTokens: 400, CostUSD: 1.0},
+		{Timestamp: base.Add(5 * time.Minute), Model: "claude-sonnet-4", InputTokens: 40, CacheCreationTokens: 100, CacheReadTokens: 200, CostUSD: 0.5},
+	}
+	blocks := analysis.CreateSessionBlocks(entries)
+	assert.Len(t, blocks, 1)
+
+	got := renderSessionCacheHitRate(&blocks[0], barWidth)
+
+	// Token classes summed by hand from the entries above: the per-model
+	// aggregates must produce the same rendered line the entry loop did.
+	rate := analysis.CalculateCacheHitRate(100, 300, 600)
+	expected := renderCacheHitRateLine("Session - Cache Hit:", rate, barWidth)
+	assert.Equal(t, expected, got)
+	assert.Contains(t, got, "60.0%")
+}
+
+func TestRenderSessionCacheHitRateNoActivity(t *testing.T) {
+	// Width is irrelevant with no activity; a narrower bar also exercises the parameter
+	const barWidth = 30
+	assert.Empty(t, renderSessionCacheHitRate(nil, barWidth))
+	assert.Empty(t, renderSessionCacheHitRate(&models.SessionBlock{IsGap: true}, barWidth))
+	assert.Empty(t, renderSessionCacheHitRate(&models.SessionBlock{}, barWidth))
+}
+
+func TestRenderWeeklyCacheHitRate(t *testing.T) {
+	now := time.Date(2025, 12, 3, 12, 0, 0, 0, time.UTC)
+	const barWidth = 45
+
+	entries := []models.UsageEntry{
+		// Older than 7 days - excluded (its cache reads would drag the rate up)
+		{Timestamp: now.Add(-8 * 24 * time.Hour), Model: "claude-sonnet-4", InputTokens: 10, CacheReadTokens: 10000, CostUSD: 0.1},
+		// Within the window
+		{Timestamp: now.Add(-2 * time.Hour), Model: "claude-opus-4-5", InputTokens: 150, CacheCreationTokens: 250, CacheReadTokens: 300, CostUSD: 1.0},
+		{Timestamp: now.Add(-1 * time.Hour), Model: "claude-sonnet-4", InputTokens: 50, CacheCreationTokens: 50, CacheReadTokens: 200, CostUSD: 0.5},
+	}
+	blocks := analysis.CreateSessionBlocks(entries)
+
+	got := renderWeeklyCacheHitRate(blocks, now, barWidth)
+
+	// Only the recent block counts: 500 cache reads / 1000 total = 50%.
+	rate := analysis.CalculateCacheHitRate(200, 300, 500)
+	expected := renderCacheHitRateLine("Weekly - Cache Hit:", rate, barWidth)
+	assert.Equal(t, expected, got)
+	assert.Contains(t, got, "50.0%")
+}
+
+func TestRenderWeeklyCacheHitRateHiddenWhenHealthy(t *testing.T) {
+	now := time.Date(2025, 12, 3, 12, 0, 0, 0, time.UTC)
+	entries := []models.UsageEntry{
+		{Timestamp: now.Add(-1 * time.Hour), Model: "claude-sonnet-4", InputTokens: 50, CacheReadTokens: 950, CostUSD: 0.5},
+	}
+	blocks := analysis.CreateSessionBlocks(entries)
+	assert.Empty(t, renderWeeklyCacheHitRate(blocks, now, 45))
 }

@@ -32,4 +32,3 @@ func GetWeeklyLimits(plan string) WeeklyLimits {
 	// Return Pro as default
 	return PredefinedWeeklyLimits["pro"]
 }
-

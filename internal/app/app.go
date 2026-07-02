@@ -33,13 +33,22 @@ func init() {
 		log.SetOutput(io.Discard)
 		return
 	}
-	f, err := os.OpenFile(filepath.Join(logDir, "ccu.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logPath := filepath.Join(logDir, "ccu.log")
+	// Rotate oversized logs (append-only otherwise grows unbounded); rename
+	// replaces any previous .old file
+	if info, err := os.Stat(logPath); err == nil && info.Size() > maxLogSize {
+		_ = os.Rename(logPath, logPath+".old")
+	}
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		log.SetOutput(io.Discard)
 		return
 	}
 	log.SetOutput(f)
 }
+
+// maxLogSize caps ccu.log; beyond this the file is rotated to ccu.log.old on startup
+const maxLogSize = 10 * 1024 * 1024
 
 // Minimum intervals between OAuth API calls to avoid rate limiting (429s).
 const (
@@ -59,8 +68,10 @@ type dataLoadedMsg struct {
 	err                error
 	oauthErr           error         // Separate OAuth error for proper handling
 	oauthDisabled      bool          // Whether OAuth should be permanently disabled
+	oauthUserAction    bool          // Whether the OAuth error needs re-authentication (never auto-retry)
 	oauthFreshData     bool          // Whether OAuth data was freshly fetched (not from cache)
 	oauthRateLimitWait time.Duration // How long to wait before retrying after 429
+	generation         uint64        // Load generation at dispatch - stale results are dropped
 }
 type clearScreenMsg struct{}
 
@@ -160,10 +171,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case dataLoadedMsg:
-		if msg.err != nil {
-			m.SetError(msg.err)
+		// Drop results from superseded loads so a slow load finishing late
+		// can't overwrite fresher state
+		if msg.generation != m.loadGeneration {
 			return m, nil
 		}
+
+		// OAuth results are processed before the JSONL error check so a
+		// transient JSONL failure doesn't discard OAuth data fetched in the
+		// same load.
 
 		// Handle rate limit backoff - don't disable OAuth, just delay next fetch
 		if msg.oauthRateLimitWait > 0 {
@@ -176,7 +192,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				log.Printf("OAuth disabled: %v (falling back to JSONL)", msg.oauthErr)
 				m.MarkOAuthErrorLogged()
 			}
-			m.DisableOAuth(msg.oauthErr.Error())
+			m.DisableOAuth(msg.oauthErr.Error(), msg.oauthUserAction)
 		}
 
 		// Store OAuth data if available
@@ -196,9 +212,25 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Process entries into sessions
+		if msg.err != nil {
+			m.SetError(msg.err)
+			return m, nil
+		}
+
+		// Process entries into sessions. On cache hits internal/data returns
+		// the identical slice, so the session block structure is unchanged -
+		// skip the O(entries) block rebuild and re-run only the time-dependent
+		// updates (IsActive/ActualEndTime marking and cost/burn-rate refresh)
+		// on the existing blocks.
 		now := time.Now()
-		sessions := analysis.CreateSessionBlocks(msg.entries)
+		sameEntries := len(msg.entries) == len(m.entries) &&
+			(len(msg.entries) == 0 || &msg.entries[0] == &m.entries[0])
+		var sessions []models.SessionBlock
+		if sameEntries {
+			sessions = m.sessions
+		} else {
+			sessions = analysis.CreateSessionBlocks(msg.entries)
+		}
 		sessions = analysis.MarkActiveSessions(sessions, now)
 		sessions = analysis.UpdateSessionCosts(sessions)
 
@@ -256,11 +288,11 @@ func (m AppModel) View() string {
 	default:
 		// Create dashboard data
 		data := ui.DashboardData{
-			Config:                m.config,
-			Limits:                m.limits,
-			CurrentSession:        m.currentSession,
-			AllSessions:           m.sessions,
-			OAuthData:             m.oauthData,
+			Config:                 m.config,
+			Limits:                 m.limits,
+			CurrentSession:         m.currentSession,
+			AllSessions:            m.sessions,
+			OAuthData:              m.oauthData,
 			OAuthUnavailableReason: m.getOAuthUnavailableReason(),
 		}
 		content = ui.RenderDashboard(data)
@@ -290,6 +322,16 @@ func loadDataCmd(config *models.Config) tea.Cmd {
 // see a stale snapshot. Keeping every model touchpoint synchronous means the
 // mutations propagate through Update's returned model as the caller expects.
 func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
+	// Stamp this dispatch with a fresh generation so a slow load finishing
+	// after a newer one is dropped (mirrors the tickGeneration pattern).
+	// Init dispatches with a nil model; generation 0 matches the zero-valued
+	// model until the first stamped dispatch supersedes it.
+	var loadGeneration uint64
+	if model != nil {
+		model.loadGeneration++
+		loadGeneration = model.loadGeneration
+	}
+
 	forceRefresh := model != nil && model.ShouldForceRefresh()
 	if forceRefresh && model != nil {
 		model.SetForceRefresh(false) // Clear the flag immediately
@@ -406,8 +448,10 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 			err:                err,
 			oauthErr:           oauthErr,
 			oauthDisabled:      oauthShouldDisable,
+			oauthUserAction:    oauth.RequiresUserAction(oauthErr),
 			oauthFreshData:     oauthFreshData,
 			oauthRateLimitWait: oauthRateLimitWait,
+			generation:         loadGeneration,
 		}
 	}
 }
@@ -457,21 +501,10 @@ func isOAuthSessionStale(model *AppModel) bool {
 		return true
 	}
 
-	// Check if session just rolled over but utilisation is implausibly high
-	// This indicates the API returned stale utilisation data
-	sessionJustRolledOver := !resetTime.After(now)
-	if sessionJustRolledOver {
-		elapsed := now.Sub(resetTime)
-		// Maximum reasonable utilisation = (elapsed / 5 hours) * 100
-		maxReasonablePercent := (elapsed.Hours() / 5.0) * 100
-		if maxReasonablePercent < 1 {
-			maxReasonablePercent = 1
-		}
-
-		// If utilisation is much higher than possible, data is stale
-		if model.oauthData.FiveHour.Utilisation > maxReasonablePercent*2 {
-			return true
-		}
+	// If the session just rolled over but utilisation is implausibly high,
+	// the API returned stale utilisation data
+	if _, _, stale := model.oauthData.EffectiveFiveHour(now); stale {
+		return true
 	}
 
 	// Check if remaining time has been at 0 for more than 5 minutes

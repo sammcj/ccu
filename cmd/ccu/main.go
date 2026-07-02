@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sammcj/ccu/internal/api"
@@ -53,23 +55,44 @@ func main() {
 	model := app.NewModel(cfg)
 
 	// Start optional API server
+	var (
+		apiServer *api.Server
+		apiCancel context.CancelFunc
+	)
 	if cfg.API.Enabled {
-		apiServer := api.New(cfg.API)
+		apiServer = api.New(cfg.API)
 		model.SetAPIServer(apiServer)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		var ctx context.Context
+		ctx, apiCancel = context.WithCancel(context.Background())
 		go func() {
+			// Log rather than print: Bubbletea owns the altscreen while the TUI
+			// runs, so a Stderr write here would corrupt the display. The standard
+			// logger is already redirected to the cache-dir log file at startup.
 			if err := apiServer.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				fmt.Fprintf(os.Stderr, "API server error: %v\n", err)
+				log.Printf("API server error: %v", err)
 			}
 		}()
+	}
+
+	// shutdownAPI stops the API server (if running) and waits up to 5s for it to
+	// drain, so in-flight requests finish before the process exits. Safe to call
+	// on both the success and error paths; a no-op when the server is disabled.
+	shutdownAPI := func() {
+		if apiCancel == nil {
+			return
+		}
+		apiCancel()
+		select {
+		case <-apiServer.Done():
+		case <-time.After(5 * time.Second):
+		}
 	}
 
 	// Create Bubbletea program
 	p := tea.NewProgram(
 		model,
-		tea.WithAltScreen(),     // Use alternate screen buffer
-		tea.WithReportFocus(),   // Get focus/blur events (triggers refresh on terminal focus)
+		tea.WithAltScreen(),   // Use alternate screen buffer
+		tea.WithReportFocus(), // Get focus/blur events (triggers refresh on terminal focus)
 	)
 
 	// Listen for SIGCONT (process resumed after suspension/sleep) and inject
@@ -84,9 +107,12 @@ func main() {
 
 	// Run the program
 	if _, err := p.Run(); err != nil {
+		shutdownAPI()
 		fmt.Fprintf(os.Stderr, "Error running application: %v\n", err)
 		os.Exit(1)
 	}
+
+	shutdownAPI()
 }
 
 // runModelCheck compares ccu's model tables against upstream pricing.

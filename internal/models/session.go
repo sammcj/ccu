@@ -6,20 +6,20 @@ import (
 
 // SessionBlock represents a 5-hour usage window
 type SessionBlock struct {
-	ID             string
-	StartTime      time.Time
-	EndTime        time.Time
-	ActualEndTime  *time.Time // When session actually ended (for completed sessions)
-	Entries        []UsageEntry
-	TotalTokens    int // All tokens including cache (for cost calculations)
-	DisplayTokens  int // Only input + output tokens (for UI display, matching Python)
-	CostUSD        float64
-	IsActive       bool
-	IsGap          bool // True if this is a gap between sessions
-	BurnRate       float64 // tokens per minute
-	CostBurnRate   float64 // USD per minute
-	PerModelStats  map[string]*ModelStats
-	MessageCount   int
+	ID            string
+	StartTime     time.Time
+	EndTime       time.Time
+	ActualEndTime *time.Time // When session actually ended (for completed sessions)
+	LastEntryTime time.Time  // Timestamp of the last entry appended (for actual end time)
+	TotalTokens   int        // All tokens including cache (for cost calculations)
+	DisplayTokens int        // Only input + output tokens (for UI display, matching Python)
+	CostUSD       float64
+	IsActive      bool
+	IsGap         bool    // True if this is a gap between sessions
+	BurnRate      float64 // tokens per minute
+	CostBurnRate  float64 // USD per minute
+	PerModelStats map[string]*ModelStats
+	MessageCount  int
 }
 
 // Duration returns the session duration
@@ -68,9 +68,12 @@ func (sb *SessionBlock) Progress(now time.Time) float64 {
 
 // AddEntry adds a usage entry to this session block
 func (sb *SessionBlock) AddEntry(entry UsageEntry) {
-	sb.Entries = append(sb.Entries, entry)
-	sb.TotalTokens += entry.TotalTokens()       // All tokens (for cost calculations)
-	sb.DisplayTokens += entry.DisplayTokens()   // Only input + output (for UI display)
+	// Track the last appended entry's timestamp (entries arrive time-sorted in
+	// production) so MarkActiveSessions can set ActualEndTime without retaining
+	// a full copy of every entry.
+	sb.LastEntryTime = entry.Timestamp
+	sb.TotalTokens += entry.TotalTokens()     // All tokens (for cost calculations)
+	sb.DisplayTokens += entry.DisplayTokens() // Only input + output (for UI display)
 	sb.MessageCount++
 
 	// Update per-model stats

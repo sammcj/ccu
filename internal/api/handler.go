@@ -120,33 +120,15 @@ func buildSessionSection(session *models.SessionBlock, limits models.Limits, oau
 	remaining := session.RemainingDuration(now)
 
 	// Prefer the OAuth utilisation percentage — it matches what Anthropic's servers
-	// track and is what the TUI displays. Fall back to a cost-based estimate only
-	// when OAuth data isn't available.
+	// track and is what the TUI displays. EffectiveFiveHour applies the same
+	// session-rollover staleness clamp the TUI uses: utilisation left over from
+	// the previous 5-hour window reads as 0 until the API catches up. Fall back
+	// to a cost-based estimate only when OAuth data isn't available.
 	var utilisationPct float64
 	if oauthData != nil {
-		utilisationPct = oauthData.FiveHour.Utilisation
+		utilisationPct, _, _ = oauthData.EffectiveFiveHour(now)
 	} else if limits.CostLimitUSD > 0 {
 		utilisationPct = (session.CostUSD / limits.CostLimitUSD) * 100
-	}
-
-	// Apply the same staleness clamp the TUI uses in renderSessionMetricsFromOAuth.
-	// When the 5-hour window has rolled over, the OAuth API may still report the
-	// previous session's utilisation. If it's implausibly high for the elapsed time
-	// in the new session, clamp to 0 until the API catches up.
-	if oauthData != nil {
-		if resetTime, err := oauth.ParseResetTime(oauthData.FiveHour.ResetsAt); err == nil {
-			if !resetTime.After(now) { // session has rolled over
-				sessionStart := resetTime
-				elapsed := now.Sub(sessionStart)
-				maxReasonable := (elapsed.Hours() / 5.0) * 100
-				if maxReasonable < 1 {
-					maxReasonable = 1
-				}
-				if utilisationPct > maxReasonable*2 {
-					utilisationPct = 0
-				}
-			}
-		}
 	}
 
 	remainingSeconds := int64(math.Max(0, remaining.Seconds()))
@@ -160,15 +142,15 @@ func buildSessionSection(session *models.SessionBlock, limits models.Limits, oau
 	}
 
 	return &SessionSection{
-		UtilisationPct:   utilisationPct,
-		ResetsAt:         session.EndTime.UTC().Format(time.RFC3339),
-		ResetsInSeconds:  remainingSeconds,
-		ElapsedSeconds:   int64(elapsed.Seconds()),
-		TotalSeconds:     int64(total.Seconds()),
-		RemainingSeconds: remainingSeconds,
-		RemainingPct:     remainingPct,
-		CostUSD:          session.CostUSD,
-		MessageCount:     session.MessageCount,
+		UtilisationPct:    utilisationPct,
+		ResetsAt:          session.EndTime.UTC().Format(time.RFC3339),
+		ResetsInSeconds:   remainingSeconds,
+		ElapsedSeconds:    int64(elapsed.Seconds()),
+		TotalSeconds:      int64(total.Seconds()),
+		RemainingSeconds:  remainingSeconds,
+		RemainingPct:      remainingPct,
+		CostUSD:           session.CostUSD,
+		MessageCount:      session.MessageCount,
 		ModelDistribution: buildModelDist(session),
 	}
 }
@@ -234,7 +216,7 @@ func buildPredictionSection(
 	// Weekly depletion – include timestamp fields whenever a prediction is computable,
 	// regardless of whether WillHitLimit is true. The ESP32 uses these for countdowns.
 	if oauthData != nil {
-		weeklyPred := analysis.PredictWeeklyDepletion(oauthData, 0, 0, now)
+		weeklyPred := analysis.PredictWeeklyDepletion(oauthData, now)
 		if !weeklyPred.DepletionTime.IsZero() {
 			secs := int64(math.Max(0, weeklyPred.DepletionTime.Sub(now).Seconds()))
 			pred.WeeklyLimitAt = &weeklyPred.DepletionTime

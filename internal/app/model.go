@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -24,23 +23,25 @@ type AppModel struct {
 	oauthData      *oauth.UsageData // OAuth-fetched usage data
 
 	// State
-	loading            bool
-	err                error
-	lastRefresh        time.Time
-	lastOAuthFetch     time.Time // Track when OAuth was last fetched
-	lastWeeklyFetch    time.Time // Track when weekly data was last refreshed from OAuth
-	lastTickTime       time.Time // Track when last tick fired (for sleep detection)
-	zeroRemainingStart time.Time // Track when remaining time first hit 0
-	oauthEnabled       bool      // Whether OAuth is available
-	oauthDisabled      bool      // Whether OAuth has been disabled due to permanent error
-	oauthDisableReason string    // Reason OAuth was disabled (for UI display)
-	oauthDisabledAt    time.Time // When OAuth was disabled (for retry logic)
-	oauthRateLimitUntil time.Time // Don't fetch OAuth until this time (after 429)
-	oauthErrorLogged   bool      // Whether we've already logged the OAuth error
-	forceRefresh       bool      // Force next refresh to bypass cache (after wake/focus)
-	tickGeneration     uint64    // Incremented on resume to kill stale tick chains
-	width              int
-	height             int
+	loading                 bool
+	err                     error
+	lastRefresh             time.Time
+	lastOAuthFetch          time.Time // Track when OAuth was last fetched
+	lastWeeklyFetch         time.Time // Track when weekly data was last refreshed from OAuth
+	lastTickTime            time.Time // Track when last tick fired (for sleep detection)
+	zeroRemainingStart      time.Time // Track when remaining time first hit 0
+	oauthEnabled            bool      // Whether OAuth is available
+	oauthDisabled           bool      // Whether OAuth has been disabled due to permanent error
+	oauthDisableReason      string    // Reason OAuth was disabled (for UI display)
+	oauthDisabledAt         time.Time // When OAuth was disabled (for retry logic)
+	oauthRequiresUserAction bool      // Whether the disabling error needs re-authentication (never auto-retry)
+	oauthRateLimitUntil     time.Time // Don't fetch OAuth until this time (after 429)
+	oauthErrorLogged        bool      // Whether we've already logged the OAuth error
+	forceRefresh            bool      // Force next refresh to bypass cache (after wake/focus)
+	tickGeneration          uint64    // Incremented on resume to kill stale tick chains
+	loadGeneration          uint64    // Incremented per data load dispatch so stale results are dropped
+	width                   int
+	height                  int
 
 	// Manual refresh rate limiting
 	lastManualRefresh      time.Time // When last manual refresh was triggered
@@ -89,11 +90,6 @@ func (m *AppModel) SetDimensions(width, height int) {
 	m.height = height
 }
 
-// SetLoading sets the loading state
-func (m *AppModel) SetLoading(loading bool) {
-	m.loading = loading
-}
-
 // SetError sets an error state
 func (m *AppModel) SetError(err error) {
 	m.err = err
@@ -106,8 +102,11 @@ func (m *AppModel) SetData(entries []models.UsageEntry, sessions []models.Sessio
 	m.sessions = sessions
 	m.lastRefresh = time.Now()
 	m.loading = false
+	m.err = nil // A successful load clears any earlier transient load error
 
-	// Find current active session
+	// Find current active session. Reset first so a rebuild that yields no
+	// active session can't keep pointing into a previous sessions slice.
+	m.currentSession = nil
 	for i := range sessions {
 		if sessions[i].IsActive && !sessions[i].IsGap {
 			m.currentSession = &sessions[i]
@@ -176,32 +175,20 @@ func (m *AppModel) GetOAuthData() *oauth.UsageData {
 	return m.oauthData
 }
 
-// IsOAuthEnabled returns whether OAuth fetching is available
-func (m *AppModel) IsOAuthEnabled() bool {
-	return m.oauthEnabled
-}
-
-// HasOAuthData returns true if OAuth data has been fetched
-func (m *AppModel) HasOAuthData() bool {
-	return m.oauthData != nil
-}
-
-// DisableOAuth disables OAuth fetching due to a permanent error
-func (m *AppModel) DisableOAuth(reason string) {
+// DisableOAuth disables OAuth fetching due to a permanent error.
+// requiresUserAction marks errors that only re-authentication can fix,
+// which excludes them from the auto-retry cooldown.
+func (m *AppModel) DisableOAuth(reason string, requiresUserAction bool) {
 	m.oauthDisabled = true
 	m.oauthDisableReason = reason
 	m.oauthDisabledAt = time.Now()
+	m.oauthRequiresUserAction = requiresUserAction
 	m.oauthData = nil // Clear stale cached data so JSONL fallback is used
 }
 
 // IsOAuthDisabled returns true if OAuth has been disabled due to an error
 func (m *AppModel) IsOAuthDisabled() bool {
 	return m.oauthDisabled
-}
-
-// GetOAuthDisableReason returns the reason OAuth was disabled
-func (m *AppModel) GetOAuthDisableReason() string {
-	return m.oauthDisableReason
 }
 
 // getOAuthUnavailableReason returns a user-facing reason why OAuth data isn't showing.
@@ -235,11 +222,13 @@ func (m *AppModel) ReenableOAuth() {
 	m.oauthDisabled = false
 	m.oauthDisableReason = ""
 	m.oauthDisabledAt = time.Time{}
+	m.oauthRequiresUserAction = false
 	m.oauthErrorLogged = false
 }
 
 // ShouldRetryOAuth returns true if OAuth has been disabled long enough to retry.
-// Returns false for errors that require user action (token expired, re-authenticate).
+// Token expiry keeps retrying (Claude Code usually refreshes the token itself);
+// errors flagged as requiring user action (missing scope) never auto-retry.
 func (m *AppModel) ShouldRetryOAuth() bool {
 	if !m.oauthDisabled {
 		return false
@@ -248,9 +237,8 @@ func (m *AppModel) ShouldRetryOAuth() bool {
 		return false
 	}
 
-	// Don't retry errors that require user intervention
-	reason := strings.ToLower(m.oauthDisableReason)
-	if strings.Contains(reason, "re-authenticate") {
+	// Don't retry errors that only re-authentication can fix
+	if m.oauthRequiresUserAction {
 		return false
 	}
 
@@ -263,11 +251,6 @@ func (m *AppModel) SetZeroRemainingStart(t time.Time) {
 	m.zeroRemainingStart = t
 }
 
-// GetZeroRemainingStart returns when remaining time first hit 0
-func (m *AppModel) GetZeroRemainingStart() time.Time {
-	return m.zeroRemainingStart
-}
-
 // ClearZeroRemainingStart clears the zero remaining tracking
 func (m *AppModel) ClearZeroRemainingStart() {
 	m.zeroRemainingStart = time.Time{}
@@ -276,11 +259,6 @@ func (m *AppModel) ClearZeroRemainingStart() {
 // SetLastTickTime records when the last tick fired
 func (m *AppModel) SetLastTickTime(t time.Time) {
 	m.lastTickTime = t
-}
-
-// GetLastTickTime returns when the last tick fired
-func (m *AppModel) GetLastTickTime() time.Time {
-	return m.lastTickTime
 }
 
 // SetLastWeeklyFetch records when weekly data was last fetched
@@ -360,21 +338,9 @@ func (m *AppModel) GetRateLimitWarning() string {
 	return ""
 }
 
-// ClearExpiredRateLimitWarning clears the warning if expired
-func (m *AppModel) ClearExpiredRateLimitWarning() {
-	if m.rateLimitWarning != "" && time.Now().After(m.rateLimitWarningExpiry) {
-		m.rateLimitWarning = ""
-	}
-}
-
 // SetAPIServer attaches an API server to the model so it can receive snapshots.
 func (m *AppModel) SetAPIServer(s *api.Server) {
 	m.apiServer = s
-}
-
-// GetAPIServer returns the attached API server, or nil if not set.
-func (m *AppModel) GetAPIServer() *api.Server {
-	return m.apiServer
 }
 
 // GetLastRefresh returns the time of the last successful data refresh.

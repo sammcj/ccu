@@ -2,10 +2,14 @@ package data
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -13,35 +17,62 @@ import (
 	"github.com/sammcj/ccu/internal/models"
 )
 
-// loadCache memoises LoadUsageData across refresh ticks. When the set of
-// relevant files (and their mtime/size) is unchanged since the previous call,
-// the cached slice is returned without touching disk. This is the hot path
-// when the TUI is idle: ~2k JSONL files, ~200 of them active, parsed every
-// refresh interval otherwise.
+// jsonlFile carries the stat data captured during the directory walk so the
+// fingerprint and cache-validation stages don't re-stat every file per tick.
+type jsonlFile struct {
+	path  string
+	mtime time.Time
+	size  int64
+}
+
+// fileCacheEntry is one file's parsed output. Entries are stored pre-dedupe so
+// the merge step can apply first-seen-wins deduplication across files in a
+// stable order regardless of which files were re-parsed this tick.
+type fileCacheEntry struct {
+	mtime   time.Time
+	size    int64
+	entries []models.UsageEntry
+}
+
+// loadCache memoises LoadUsageData across refresh ticks, per file. Unchanged
+// files (same mtime and size) reuse their previously parsed entries, so a
+// growing live JSONL file only costs its own reparse rather than the whole
+// window. When nothing changed at all, the previous merged slice is returned
+// unchanged - internal/app relies on slice identity to skip recomputation.
 type loadCache struct {
 	mu          sync.Mutex
-	fingerprint string
 	hoursBack   int
-	entries     []models.UsageEntry
+	fingerprint uint64
+	valid       bool
+	files       map[string]fileCacheEntry
+	merged      []models.UsageEntry
 }
 
 var globalLoadCache loadCache
 
-// FindJSONLFiles recursively finds all .jsonl files in the given path
-func FindJSONLFiles(rootPath string) ([]string, error) {
-	var jsonlFiles []string
+// findJSONLFiles recursively finds all .jsonl files under rootPath, capturing
+// mtime and size from the directory entry so each file is only stat'd once.
+func findJSONLFiles(rootPath string) ([]jsonlFile, error) {
+	var files []jsonlFile
 
-	err := filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
+	err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// Skip directories we can't read
 			return nil
 		}
 
 		// Include all .jsonl files (matches Python implementation)
-		if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".jsonl") {
-			jsonlFiles = append(jsonlFiles, path)
+		if d.IsDir() || !strings.HasSuffix(strings.ToLower(d.Name()), ".jsonl") {
+			return nil
 		}
 
+		info, err := d.Info()
+		if err != nil {
+			// File vanished between listing and stat; skip it
+			return nil
+		}
+
+		files = append(files, jsonlFile{path: path, mtime: info.ModTime(), size: info.Size()})
 		return nil
 	})
 
@@ -49,75 +80,27 @@ func FindJSONLFiles(rootPath string) ([]string, error) {
 		return nil, fmt.Errorf("walking directory tree: %w", err)
 	}
 
-	return jsonlFiles, nil
+	return files, nil
 }
 
 // maxJSONLLineBytes is the largest single JSONL line the scanner will accept.
 // Some Claude Code recordings include large tool-use payloads on a single line.
-const maxJSONLLineBytes = 10 * 1024 * 1024 // 10 MiB
+// A var rather than a const so tests can lower it without writing 10 MiB files.
+var maxJSONLLineBytes = 10 * 1024 * 1024 // 10 MiB
 
 // readStats records non-fatal problems encountered while loading JSONL data.
 // Values are advisory: callers use them to surface a single summary warning
 // rather than logging every skipped file.
 //
 //   - skippedFiles: files that couldn't be opened OR whose scan aborted
-//     partway (bubbled up from readJSONLFileWithFilter as an error).
+//     partway (bubbled up from readJSONLFileWithFilter as an error). Entries
+//     parsed before an aborted scan are still kept.
 //   - parseErrors: individual JSONL lines that failed to unmarshal. The file
 //     they came from still contributes any lines that did parse.
 type readStats struct {
 	skippedFiles int
 	parseErrors  int
 	lastErr      error
-}
-
-// ReadUsageEntries reads usage entries from JSONL files
-// Optimised to filter during parsing to reduce memory usage
-func ReadUsageEntries(files []string, hoursBack int) ([]models.UsageEntry, error) {
-	// Calculate cutoff time upfront
-	var cutoff time.Time
-	if hoursBack > 0 {
-		cutoff = time.Now().Add(-time.Duration(hoursBack) * time.Hour)
-	}
-
-	// Use a map for deduplication during read to avoid storing duplicates
-	seen := make(map[string]bool)
-	var allEntries []models.UsageEntry
-
-	// Reuse one scanner buffer across every file rather than allocating a fresh
-	// 10 MiB per file. bufio.Scanner will grow from the initial size up to the
-	// cap on demand, so this covers the "one huge line" case without the
-	// per-file allocation cost when the tree has thousands of JSONL files.
-	scanBuf := make([]byte, 64*1024)
-	stats := &readStats{}
-
-	for _, file := range files {
-		// Check file modification time - skip old files entirely
-		if hoursBack > 0 {
-			info, err := os.Stat(file)
-			if err == nil && info.ModTime().Before(cutoff) {
-				// File hasn't been modified since cutoff, skip entirely
-				continue
-			}
-		}
-
-		entries, err := readJSONLFileWithFilter(file, cutoff, seen, scanBuf, stats)
-		if err != nil {
-			stats.skippedFiles++
-			stats.lastErr = err
-			continue
-		}
-		allEntries = append(allEntries, entries...)
-	}
-
-	if stats.skippedFiles > 0 || stats.parseErrors > 0 {
-		log.Printf("data: %d file(s) skipped, %d parse error(s); last err: %v",
-			stats.skippedFiles, stats.parseErrors, stats.lastErr)
-	}
-
-	// Sort by timestamp
-	allEntries = SortEntriesByTime(allEntries)
-
-	return allEntries, nil
 }
 
 // readJSONLFileWithFilter reads a JSONL file with time filtering and deduplication.
@@ -179,10 +162,10 @@ func readJSONLFileWithFilter(filePath string, cutoff time.Time, seen map[string]
 	}
 
 	if err := scanner.Err(); err != nil {
-		// Scan failure bubbles up as a file-level error; ReadUsageEntries will
-		// increment skippedFiles. We don't add a separate counter here to avoid
-		// double-counting the same failure under two different labels.
-		return nil, fmt.Errorf("scanning file %s: %w", filePath, err)
+		// Scan failure (e.g. a single line beyond maxJSONLLineBytes) bubbles up
+		// as a file-level error, but the entries parsed before the failure are
+		// returned so callers keep the file's valid data.
+		return entries, fmt.Errorf("scanning file %s: %w", filePath, err)
 	}
 
 	return entries, nil
@@ -205,7 +188,8 @@ func GetDefaultDataPath() (string, error) {
 	return claudePath, nil
 }
 
-// LoadUsageData is a convenience function to load all usage data
+// LoadUsageData loads all usage data within the hoursBack window, reusing
+// per-file parse results from the previous call where files are unchanged.
 func LoadUsageData(dataPath string, hoursBack int) ([]models.UsageEntry, error) {
 	// Use default path if not specified
 	if dataPath == "" {
@@ -216,8 +200,7 @@ func LoadUsageData(dataPath string, hoursBack int) ([]models.UsageEntry, error) 
 		}
 	}
 
-	// Find all JSONL files
-	files, err := FindJSONLFiles(dataPath)
+	files, err := findJSONLFiles(dataPath)
 	if err != nil {
 		return nil, fmt.Errorf("finding JSONL files: %w", err)
 	}
@@ -226,56 +209,122 @@ func LoadUsageData(dataPath string, hoursBack int) ([]models.UsageEntry, error) 
 		return nil, fmt.Errorf("no JSONL files found in %s", dataPath)
 	}
 
-	// Build a fingerprint of the files that would actually be parsed (inside
-	// the cutoff window). If it matches the previous call, skip the reparse.
-	fingerprint := buildLoadFingerprint(files, hoursBack)
+	// Deterministic order so first-seen-wins dedupe is stable across ticks.
+	slices.SortFunc(files, func(a, b jsonlFile) int { return strings.Compare(a.path, b.path) })
 
-	globalLoadCache.mu.Lock()
-	if globalLoadCache.entries != nil &&
-		globalLoadCache.hoursBack == hoursBack &&
-		globalLoadCache.fingerprint == fingerprint {
-		cached := globalLoadCache.entries
-		globalLoadCache.mu.Unlock()
-		return cached, nil
-	}
-	globalLoadCache.mu.Unlock()
-
-	// Read and process entries
-	entries, err := ReadUsageEntries(files, hoursBack)
-	if err != nil {
-		return nil, fmt.Errorf("reading usage entries: %w", err)
-	}
-
-	globalLoadCache.mu.Lock()
-	globalLoadCache.fingerprint = fingerprint
-	globalLoadCache.hoursBack = hoursBack
-	globalLoadCache.entries = entries
-	globalLoadCache.mu.Unlock()
-
-	return entries, nil
-}
-
-// buildLoadFingerprint produces a deterministic signature of the JSONL files
-// that will be parsed by ReadUsageEntries for this hoursBack window. Files
-// whose mtime is already before the cutoff are excluded because
-// ReadUsageEntries skips them anyway. Stat failures fall through as an empty
-// row so a missing file still invalidates the cache.
-func buildLoadFingerprint(files []string, hoursBack int) string {
 	var cutoff time.Time
 	if hoursBack > 0 {
 		cutoff = time.Now().Add(-time.Duration(hoursBack) * time.Hour)
 	}
-	var b strings.Builder
-	for _, f := range files {
-		info, err := os.Stat(f)
-		if err != nil {
-			fmt.Fprintf(&b, "%s|missing\n", f)
-			continue
-		}
-		if !cutoff.IsZero() && info.ModTime().Before(cutoff) {
-			continue
-		}
-		fmt.Fprintf(&b, "%s|%d|%d\n", f, info.ModTime().UnixNano(), info.Size())
+	fingerprint := loadFingerprint(files, cutoff)
+
+	c := &globalLoadCache
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Fast path: same window, no file changed. Return the previous merged
+	// slice itself (not a copy) - internal/app compares slice identity to skip
+	// session recomputation, so the backing array must be pointer-identical.
+	if c.valid && c.hoursBack == hoursBack && c.fingerprint == fingerprint {
+		return c.merged, nil
 	}
-	return b.String()
+
+	// An hoursBack change can move the cutoff backwards, and per-file entries
+	// were parse-time filtered against the old cutoff, so none can be reused.
+	if c.files == nil || c.hoursBack != hoursBack {
+		c.files = make(map[string]fileCacheEntry)
+	}
+
+	// Reuse one scanner buffer across every file rather than allocating a fresh
+	// 10 MiB per file; bufio.Scanner grows it up to maxJSONLLineBytes on demand.
+	scanBuf := make([]byte, 64*1024)
+	stats := &readStats{}
+	next := make(map[string]fileCacheEntry, len(files))
+	seen := make(map[string]bool)
+	var merged []models.UsageEntry
+	retryNeeded := false
+
+	for _, f := range files {
+		// Files older than the window contribute nothing; leaving them out of
+		// next also evicts deleted and aged-out files from the cache.
+		if !cutoff.IsZero() && f.mtime.Before(cutoff) {
+			continue
+		}
+
+		ce, ok := c.files[f.path]
+		if !ok || !ce.mtime.Equal(f.mtime) || ce.size != f.size {
+			// New or changed file: reparse without dedupe (dedupe happens at
+			// merge). A scan failure keeps the entries parsed before it.
+			entries, err := readJSONLFileWithFilter(f.path, cutoff, nil, scanBuf, stats)
+			if err != nil {
+				stats.skippedFiles++
+				stats.lastErr = err
+				if len(entries) == 0 {
+					// Nothing usable (e.g. a transient open failure): leave the
+					// file uncached and invalidate the fast path so the next
+					// load retries it rather than treating it as empty forever.
+					retryNeeded = true
+					continue
+				}
+			}
+			ce = fileCacheEntry{mtime: f.mtime, size: f.size, entries: entries}
+		}
+		next[f.path] = ce
+
+		// Merge with first-seen-wins dedupe. The cutoff moves forward every
+		// call, so cached entries are re-filtered here (cheap) instead of
+		// forcing a reparse when only the window boundary moved.
+		for i := range ce.entries {
+			e := &ce.entries[i]
+			if !cutoff.IsZero() && e.Timestamp.Before(cutoff) {
+				continue
+			}
+			key := e.Hash()
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			merged = append(merged, *e)
+		}
+	}
+
+	if stats.skippedFiles > 0 || stats.parseErrors > 0 {
+		log.Printf("data: %d file(s) skipped, %d parse error(s); last err: %v",
+			stats.skippedFiles, stats.parseErrors, stats.lastErr)
+	}
+
+	// Sort by timestamp, oldest first
+	slices.SortFunc(merged, func(a, b models.UsageEntry) int {
+		return a.Timestamp.Compare(b.Timestamp)
+	})
+
+	c.files = next
+	c.hoursBack = hoursBack
+	c.fingerprint = fingerprint
+	c.merged = merged
+	c.valid = !retryNeeded
+
+	return merged, nil
+}
+
+// loadFingerprint produces a signature of the JSONL files that would be merged
+// for this window: path, mtime and size of every file inside the cutoff. Files
+// whose mtime is already before the cutoff are excluded because the load skips
+// them anyway. A running FNV-64 avoids building the previous implementation's
+// large concatenated string every tick.
+func loadFingerprint(files []jsonlFile, cutoff time.Time) uint64 {
+	h := fnv.New64a()
+	var buf [8]byte
+	for _, f := range files {
+		if !cutoff.IsZero() && f.mtime.Before(cutoff) {
+			continue
+		}
+		h.Write([]byte(f.path))
+		h.Write([]byte{0})
+		binary.LittleEndian.PutUint64(buf[:], uint64(f.mtime.UnixNano()))
+		h.Write(buf[:])
+		binary.LittleEndian.PutUint64(buf[:], uint64(f.size))
+		h.Write(buf[:])
+	}
+	return h.Sum64()
 }

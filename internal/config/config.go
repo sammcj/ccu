@@ -169,17 +169,7 @@ func ParseFlags() (*models.Config, error) {
 	}
 
 	// Port: explicit CLI flag wins, otherwise env var, otherwise the flag default.
-	if explicit["api-port"] {
-		config.API.Port = *apiPort
-	} else if v := os.Getenv("CCU_API_PORT"); v != "" {
-		if p, err := strconv.Atoi(v); err == nil {
-			config.API.Port = p
-		} else {
-			config.API.Port = *apiPort
-		}
-	} else {
-		config.API.Port = *apiPort
-	}
+	config.API.Port = resolveAPIPort(explicit["api-port"], *apiPort, os.Getenv("CCU_API_PORT"))
 
 	// Bind: explicit CLI flag wins, otherwise env var, otherwise the flag default.
 	if explicit["api-bind"] {
@@ -206,6 +196,18 @@ func ParseFlags() (*models.Config, error) {
 	}
 
 	return config, nil
+}
+
+// resolveAPIPort picks the API port using precedence: explicit CLI flag > env var > flag default.
+// An unparseable env value falls back to the flag default rather than erroring.
+func resolveAPIPort(explicit bool, flagVal int, env string) int {
+	if explicit || env == "" {
+		return flagVal
+	}
+	if p, err := strconv.Atoi(env); err == nil {
+		return p
+	}
+	return flagVal
 }
 
 // readTokenFile reads a bearer token from $HOME/.ccu/.api_token if present.

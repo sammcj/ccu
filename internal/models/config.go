@@ -23,11 +23,11 @@ type Config struct {
 	CustomMessages int
 
 	// Display configuration
-	ViewMode      ViewMode
-	RefreshRate   time.Duration
-	Timezone      *time.Location
-	Theme         Theme
-	HoursBack     int
+	ViewMode    ViewMode
+	RefreshRate time.Duration
+	Timezone    *time.Location
+	Theme       Theme
+	HoursBack   int
 
 	// Feature flags
 	ShowWeekly bool
@@ -73,7 +73,7 @@ const (
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		DataPath:       "",  // Will be set to ~/.claude/projects
+		DataPath:       "", // Will be set to ~/.claude/projects
 		Plan:           "max5",
 		ViewMode:       ViewModeRealtime,
 		RefreshRate:    30 * time.Second, // Default for JSONL mode, adjusted to 60s for OAuth

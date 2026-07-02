@@ -2,253 +2,179 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/sammcj/ccu/internal/models"
 )
 
-// DailyStats holds daily aggregated statistics
-type DailyStats struct {
-	Date         time.Time
+// periodStats holds statistics aggregated for a single time period (day or month).
+type periodStats struct {
+	Period       time.Time
 	TotalTokens  int
 	TotalCost    float64
 	MessageCount int
 	Models       map[string]bool
 }
 
-// MonthlyStats holds monthly aggregated statistics
-type MonthlyStats struct {
-	Month        time.Time
-	TotalTokens  int
-	TotalCost    float64
-	MessageCount int
-	Models       map[string]bool
-}
-
-// RenderDailyView renders the daily aggregation view
+// RenderDailyView renders the daily aggregation view.
 func RenderDailyView(entries []models.UsageEntry, width int) string {
-	if len(entries) == 0 {
-		return WarningStyle.Render("No data available for daily view\n\nPress q to exit")
-	}
-
-	// Aggregate by day
-	dailyStats := aggregateByDay(entries)
-
-	var lines []string
-	lines = append(lines, TitleStyle.Render("📅 Daily Usage Report"))
-	lines = append(lines, "")
-
-	// Header
-	header := fmt.Sprintf("%-12s  %-15s  %-12s  %-10s  %-10s",
-		"Date", "Models", "Tokens", "Cost", "Messages")
-	lines = append(lines, HeaderStyle.Render(header))
-	lines = append(lines, LabelStyle.Render("─────────────────────────────────────────────────────────────────────"))
-
-	// Rows
-	totalTokens := 0
-	totalCost := 0.0
-	totalMessages := 0
-
-	for _, stats := range dailyStats {
-		dateStr := stats.Date.Format("2006-01-02")
-		modelsStr := formatModels(stats.Models)
-		tokensStr := formatNumber(stats.TotalTokens)
-		costStr := fmt.Sprintf("$%.2f", stats.TotalCost)
-		messagesStr := fmt.Sprintf("%d", stats.MessageCount)
-
-		row := fmt.Sprintf("%-12s  %-15s  %12s  %10s  %10s",
-			dateStr, modelsStr, tokensStr, costStr, messagesStr)
-		lines = append(lines, row)
-
-		totalTokens += stats.TotalTokens
-		totalCost += stats.TotalCost
-		totalMessages += stats.MessageCount
-	}
-
-	// Total row
-	lines = append(lines, LabelStyle.Render("─────────────────────────────────────────────────────────────────────"))
-	totalRow := fmt.Sprintf("%-12s  %-15s  %12s  %10s  %10s",
-		"Total", "", formatNumber(totalTokens), fmt.Sprintf("$%.2f", totalCost), fmt.Sprintf("%d", totalMessages))
-	lines = append(lines, ValueStyle.Render(totalRow))
-
-	lines = append(lines, "")
-	lines = append(lines, HelpStyle.Render("Press q to exit"))
-
-	return joinLines(lines)
+	return renderPeriodView(entries, "2006-01-02", "📅 Daily Usage Report",
+		"Date", 12, "No data available for daily view")
 }
 
-// RenderMonthlyView renders the monthly aggregation view
+// RenderMonthlyView renders the monthly aggregation view.
 func RenderMonthlyView(entries []models.UsageEntry, width int) string {
+	return renderPeriodView(entries, "2006-01", "📊 Monthly Usage Report",
+		"Month", 10, "No data available for monthly view")
+}
+
+// renderPeriodView renders an aggregation table grouped by the given period format.
+func renderPeriodView(entries []models.UsageEntry, periodFormat, title, periodLabel string, periodWidth int, emptyMsg string) string {
 	if len(entries) == 0 {
-		return WarningStyle.Render("No data available for monthly view\n\nPress q to exit")
+		return WarningStyle.Render(emptyMsg + "\n\nPress q to exit")
 	}
 
-	// Aggregate by month
-	monthlyStats := aggregateByMonth(entries)
+	stats := aggregatePeriod(entries, periodFormat)
+	separator := strings.Repeat("─", periodWidth+57)
 
 	var lines []string
-	lines = append(lines, TitleStyle.Render("📊 Monthly Usage Report"))
+	lines = append(lines, TitleStyle.Render(title))
 	lines = append(lines, "")
 
-	// Header
-	header := fmt.Sprintf("%-10s  %-15s  %-12s  %-10s  %-10s",
-		"Month", "Models", "Tokens", "Cost", "Messages")
+	header := fmt.Sprintf("%-*s  %-15s  %-12s  %-10s  %-10s",
+		periodWidth, periodLabel, "Models", "Tokens", "Cost", "Messages")
 	lines = append(lines, HeaderStyle.Render(header))
-	lines = append(lines, LabelStyle.Render("───────────────────────────────────────────────────────────────────"))
+	lines = append(lines, LabelStyle.Render(separator))
 
-	// Rows
 	totalTokens := 0
 	totalCost := 0.0
 	totalMessages := 0
 
-	for _, stats := range monthlyStats {
-		monthStr := stats.Month.Format("2006-01")
-		modelsStr := formatModels(stats.Models)
-		tokensStr := formatNumber(stats.TotalTokens)
-		costStr := fmt.Sprintf("$%.2f", stats.TotalCost)
-		messagesStr := fmt.Sprintf("%d", stats.MessageCount)
-
-		row := fmt.Sprintf("%-10s  %-15s  %12s  %10s  %10s",
-			monthStr, modelsStr, tokensStr, costStr, messagesStr)
+	for _, s := range stats {
+		row := fmt.Sprintf("%-*s  %-15s  %12s  %10s  %10s",
+			periodWidth,
+			s.Period.Format(periodFormat),
+			formatModels(s.Models),
+			formatNumber(s.TotalTokens),
+			fmt.Sprintf("$%.2f", s.TotalCost),
+			fmt.Sprintf("%d", s.MessageCount))
 		lines = append(lines, row)
 
-		totalTokens += stats.TotalTokens
-		totalCost += stats.TotalCost
-		totalMessages += stats.MessageCount
+		totalTokens += s.TotalTokens
+		totalCost += s.TotalCost
+		totalMessages += s.MessageCount
 	}
 
-	// Total row
-	lines = append(lines, LabelStyle.Render("───────────────────────────────────────────────────────────────────"))
-	totalRow := fmt.Sprintf("%-10s  %-15s  %12s  %10s  %10s",
-		"Total", "", formatNumber(totalTokens), fmt.Sprintf("$%.2f", totalCost), fmt.Sprintf("%d", totalMessages))
+	lines = append(lines, LabelStyle.Render(separator))
+	totalRow := fmt.Sprintf("%-*s  %-15s  %12s  %10s  %10s",
+		periodWidth, "Total", "", formatNumber(totalTokens), fmt.Sprintf("$%.2f", totalCost), fmt.Sprintf("%d", totalMessages))
 	lines = append(lines, ValueStyle.Render(totalRow))
 
 	lines = append(lines, "")
 	lines = append(lines, HelpStyle.Render("Press q to exit"))
 
-	return joinLines(lines)
+	return strings.Join(lines, "\n")
 }
 
-// aggregateByDay aggregates entries by day
-func aggregateByDay(entries []models.UsageEntry) []DailyStats {
-	dailyMap := make(map[string]*DailyStats)
+// aggregatePeriod groups entries into periods keyed by the given time format,
+// returning stats sorted chronologically. Times are treated as UTC.
+func aggregatePeriod(entries []models.UsageEntry, periodFormat string) []periodStats {
+	statsMap := make(map[string]*periodStats)
 
 	for _, entry := range entries {
-		dateKey := entry.Timestamp.Format("2006-01-02")
+		key := entry.Timestamp.Format(periodFormat)
 
-		if dailyMap[dateKey] == nil {
-			dailyMap[dateKey] = &DailyStats{
-				Date:   entry.Timestamp.Truncate(24 * time.Hour),
+		if statsMap[key] == nil {
+			// Parse the key back with the same layout to get the period start.
+			periodTime, _ := time.Parse(periodFormat, key)
+			statsMap[key] = &periodStats{
+				Period: periodTime,
 				Models: make(map[string]bool),
 			}
 		}
 
-		stats := dailyMap[dateKey]
+		stats := statsMap[key]
 		stats.TotalTokens += entry.DisplayTokens() // Match Python UI - only input + output
 		stats.TotalCost += entry.CostUSD
 		stats.MessageCount++
 		stats.Models[models.NormaliseModelName(entry.Model)] = true
 	}
 
-	// Convert to slice and sort
-	var result []DailyStats
-	for _, stats := range dailyMap {
+	result := make([]periodStats, 0, len(statsMap))
+	for _, stats := range statsMap {
 		result = append(result, *stats)
 	}
 
-	// Simple sort by date
-	for i := 0; i < len(result); i++ {
-		for j := i + 1; j < len(result); j++ {
-			if result[i].Date.After(result[j].Date) {
-				result[i], result[j] = result[j], result[i]
-			}
-		}
-	}
+	slices.SortFunc(result, func(a, b periodStats) int {
+		return a.Period.Compare(b.Period)
+	})
 
 	return result
 }
 
-// aggregateByMonth aggregates entries by month
-func aggregateByMonth(entries []models.UsageEntry) []MonthlyStats {
-	monthlyMap := make(map[string]*MonthlyStats)
-
-	for _, entry := range entries {
-		monthKey := entry.Timestamp.Format("2006-01")
-
-		if monthlyMap[monthKey] == nil {
-			year, month, _ := entry.Timestamp.Date()
-			monthlyMap[monthKey] = &MonthlyStats{
-				Month:  time.Date(year, month, 1, 0, 0, 0, 0, time.UTC),
-				Models: make(map[string]bool),
-			}
-		}
-
-		stats := monthlyMap[monthKey]
-		stats.TotalTokens += entry.DisplayTokens() // Match Python UI - only input + output
-		stats.TotalCost += entry.CostUSD
-		stats.MessageCount++
-		stats.Models[models.NormaliseModelName(entry.Model)] = true
-	}
-
-	// Convert to slice and sort
-	var result []MonthlyStats
-	for _, stats := range monthlyMap {
-		result = append(result, *stats)
-	}
-
-	// Simple sort by month
-	for i := 0; i < len(result); i++ {
-		for j := i + 1; j < len(result); j++ {
-			if result[i].Month.After(result[j].Month) {
-				result[i], result[j] = result[j], result[i]
-			}
-		}
-	}
-
-	return result
-}
-
-// formatModels formats model names for table display
+// formatModels formats a set of normalised model names for table display,
+// collapsing each name to its family. Output is sorted for deterministic display.
 func formatModels(models map[string]bool) string {
 	if len(models) == 0 {
 		return "-"
 	}
 
-	var modelNames []string
+	families := make(map[string]bool)
 	for model := range models {
-		switch model {
-		case "claude-sonnet-4", "claude-sonnet-4-5":
-			modelNames = append(modelNames, "Sonnet")
-		case "claude-opus-4", "claude-3-opus":
-			modelNames = append(modelNames, "Opus")
-		case "claude-3-haiku", "claude-3-5-haiku":
-			modelNames = append(modelNames, "Haiku")
+		if family := modelFamily(model); family != "" {
+			families[family] = true
 		}
 	}
 
-	if len(modelNames) == 0 {
+	if len(families) == 0 {
 		return "Mixed"
 	}
 
-	// Simple join
-	var result strings.Builder
-	result.WriteString(modelNames[0])
-	for i := 1; i < len(modelNames); i++ {
-		result.WriteString("/" + modelNames[i])
+	names := make([]string, 0, len(families))
+	for family := range families {
+		names = append(names, family)
 	}
+	slices.Sort(names)
 
-	return result.String()
+	return strings.Join(names, "/")
 }
 
-// joinLines joins lines with newlines
-func joinLines(lines []string) string {
-	var result strings.Builder
-	for i, line := range lines {
-		result.WriteString(line)
-		if i < len(lines)-1 {
-			result.WriteString("\n")
-		}
+// modelFamily maps a normalised model name to its display family, matching the
+// substring approach used by GetModelColour. Returns "" for unrecognised names.
+func modelFamily(model string) string {
+	lower := strings.ToLower(model)
+	switch {
+	case strings.Contains(lower, "fable"):
+		return "Fable"
+	case strings.Contains(lower, "mythos"):
+		return "Mythos"
+	case strings.Contains(lower, "opus"):
+		return "Opus"
+	case strings.Contains(lower, "sonnet"):
+		return "Sonnet"
+	case strings.Contains(lower, "haiku"):
+		return "Haiku"
+	default:
+		return ""
 	}
+}
+
+// formatNumber formats large numbers with thousands separators.
+func formatNumber(n int) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+
+	var result strings.Builder
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			result.WriteRune(',')
+		}
+		result.WriteRune(c)
+	}
+
 	return result.String()
 }

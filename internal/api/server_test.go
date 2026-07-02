@@ -39,7 +39,7 @@ func TestServer_ConcurrentRequests(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
 			req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
@@ -74,7 +74,7 @@ func TestServer_StartStop(t *testing.T) {
 	addr := fmt.Sprintf("http://127.0.0.1:%d/api/status", port)
 	var resp *http.Response
 	var err error
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		resp, err = http.Get(addr) //nolint:noctx
 		if err == nil {
 			break

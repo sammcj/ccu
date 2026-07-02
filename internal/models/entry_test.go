@@ -97,10 +97,10 @@ func TestNormaliseModelName(t *testing.T) {
 // tests are the tripwire.
 func TestDisplayTokensVsTotalTokens(t *testing.T) {
 	tests := []struct {
-		name             string
-		entry            UsageEntry
-		wantDisplay      int
-		wantTotal        int
+		name        string
+		entry       UsageEntry
+		wantDisplay int
+		wantTotal   int
 	}{
 		{
 			name: "all token types present",
@@ -160,4 +160,16 @@ func TestModelStatsDisplayTokensVsTotalTokens(t *testing.T) {
 	}
 	assert.Equal(t, 3000, stats.DisplayTokens(), "DisplayTokens must be input+output")
 	assert.Equal(t, 10000, stats.TotalTokens(), "TotalTokens must sum every field")
+}
+
+// TestUsageEntryHash asserts the dedupe key semantics: distinct ID pairs give
+// distinct keys, identical pairs collide.
+func TestUsageEntryHash(t *testing.T) {
+	a := UsageEntry{MessageID: "msg_1", RequestID: "req_1"}
+	b := UsageEntry{MessageID: "msg_1", RequestID: "req_1"}
+	c := UsageEntry{MessageID: "msg_1", RequestID: "req_2"}
+
+	assert.Equal(t, "msg_1:req_1", a.Hash())
+	assert.Equal(t, a.Hash(), b.Hash())
+	assert.NotEqual(t, a.Hash(), c.Hash())
 }

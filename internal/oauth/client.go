@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,7 +24,14 @@ var (
 	ErrNetworkError = errors.New("network error")
 	// ErrRateLimited indicates the API returned 429 Too Many Requests
 	ErrRateLimited = errors.New("rate limited by API")
+	// ErrMissingScope indicates the stored token lacks the user:profile scope;
+	// only re-authenticating fixes this, so it must never auto-retry
+	ErrMissingScope = errors.New("OAuth token lacks required 'user:profile' scope. Try re-authenticating: claude logout && claude login")
 )
+
+// keychainTimeout bounds the `security` subprocess so a locked keychain's GUI
+// prompt can't block the caller (and the TUI) indefinitely.
+const keychainTimeout = 5 * time.Second
 
 // RateLimitError wraps ErrRateLimited with an optional Retry-After duration
 type RateLimitError struct {
@@ -113,6 +121,36 @@ type UsageData struct {
 	FetchedAt time.Time `json:"-"` // When this data was fetched (not from API)
 }
 
+// EffectiveFiveHour returns the five-hour utilisation adjusted for session rollover.
+// When ResetsAt has passed the window has rolled over: resetsAt is advanced by
+// 5 hours and the reported utilisation is checked for plausibility. A new
+// session's utilisation can be at most (elapsed / 5h) * 100 (floored at 1%);
+// anything more than double that is stale data from the previous window, so
+// percent is clamped to 0 and stale is true until the API catches up.
+// An unparseable ResetsAt yields the raw utilisation with stale=false.
+func (u *UsageData) EffectiveFiveHour(now time.Time) (percent float64, resetsAt time.Time, stale bool) {
+	percent = u.FiveHour.Utilisation
+	resetsAt, _ = ParseResetTime(u.FiveHour.ResetsAt)
+
+	if resetsAt.After(now) {
+		return percent, resetsAt, false
+	}
+
+	// The new window started at the old reset time
+	sessionStart := resetsAt
+	resetsAt = resetsAt.Add(5 * time.Hour)
+
+	elapsed := now.Sub(sessionStart)
+	maxReasonablePercent := (elapsed.Hours() / 5.0) * 100
+	if maxReasonablePercent < 1 {
+		maxReasonablePercent = 1
+	}
+	if percent > maxReasonablePercent*2 {
+		return 0, resetsAt, true
+	}
+	return percent, resetsAt, false
+}
+
 // Client handles OAuth-based usage data fetching
 type Client struct {
 	httpClient *http.Client
@@ -134,7 +172,10 @@ func NewClient() (*Client, error) {
 
 // getKeychainCredentials retrieves OAuth credentials from macOS Keychain
 func getKeychainCredentials() (*ClaudeAiOAuth, error) {
-	cmd := exec.Command("security", "find-generic-password", "-s", "Claude Code-credentials", "-w")
+	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "security", "find-generic-password", "-s", "Claude Code-credentials", "-w")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("keychain access failed: %w", err)
@@ -149,7 +190,7 @@ func getKeychainCredentials() (*ClaudeAiOAuth, error) {
 	hasProfileScope := slices.Contains(creds.ClaudeAiOAuth.Scopes, "user:profile")
 
 	if !hasProfileScope {
-		return nil, fmt.Errorf("OAuth token lacks required 'user:profile' scope. Try re-authenticating: claude logout && claude login")
+		return nil, ErrMissingScope
 	}
 
 	return &creds.ClaudeAiOAuth, nil
@@ -229,10 +270,44 @@ func (c *Client) FetchUsage() (*UsageData, error) {
 	return &usage, nil
 }
 
-// IsAvailable checks if OAuth authentication is available and properly configured
+// Availability cache: IsAvailable is called on every refresh tick, and each
+// uncached check forks a `security` subprocess (which can block on a keychain
+// prompt). Both positive and negative results are cached for availabilityTTL.
+const availabilityTTL = 60 * time.Second
+
+var (
+	availabilityMu    sync.Mutex
+	availabilityAt    time.Time
+	availabilityValue bool
+	// checkKeychain is a seam for tests; production uses the real keychain lookup
+	checkKeychain = func() bool {
+		_, err := getKeychainCredentials()
+		return err == nil
+	}
+)
+
+// IsAvailable checks if OAuth authentication is available and properly configured.
+// The result is cached for a short TTL so frequent callers don't fork a
+// subprocess each time.
 func IsAvailable() bool {
-	_, err := getKeychainCredentials()
-	return err == nil
+	availabilityMu.Lock()
+	defer availabilityMu.Unlock()
+
+	if !availabilityAt.IsZero() && time.Since(availabilityAt) < availabilityTTL {
+		return availabilityValue
+	}
+
+	availabilityValue = checkKeychain()
+	availabilityAt = time.Now()
+	return availabilityValue
+}
+
+// RequiresUserAction reports whether the error can only be resolved by the user
+// re-authenticating (claude logout && claude login). Token expiry is excluded
+// because Claude Code usually refreshes the token itself, so it stays eligible
+// for auto-retry.
+func RequiresUserAction(err error) bool {
+	return errors.Is(err, ErrMissingScope)
 }
 
 // ParseResetTime converts the API's reset time string to time.Time
@@ -340,8 +415,7 @@ func parseRetryAfter(header string) time.Duration {
 // GetRetryAfter extracts the RetryAfter duration from a RateLimitError.
 // Returns 0 if the error is not a RateLimitError.
 func GetRetryAfter(err error) time.Duration {
-	var rle *RateLimitError
-	if errors.As(err, &rle) {
+	if rle, ok := errors.AsType[*RateLimitError](err); ok {
 		return rle.RetryAfter
 	}
 	return 0

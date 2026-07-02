@@ -16,15 +16,14 @@ import (
 // Base UI Colours
 // These are used for general UI elements, warnings, and text
 var (
-	ColorPrimary    = lipgloss.Color("#FF8C42") // Neon orange - Used for: burn rate bars when near limit
-	ColorSuccess    = lipgloss.Color("#00FF88") // Neon green - Used for: low usage indicators, success messages
-	ColorWarning    = lipgloss.Color("#FF10F0") // Neon magenta - Used for: warning messages
-	ColorDanger     = lipgloss.Color("#FF006E") // Neon pink - Used for: critical warnings, cost depletion before reset
-	ColorInfo       = lipgloss.Color("#00D9FF") // Neon blue - Used for: informational text
-	ColorMuted      = lipgloss.Color("#8B7FA8") // Muted purple - Used for: subtle UI elements
-	ColorText       = lipgloss.Color("#E0E0FF") // Light purple-white - Used for: general text
-	ColorWhite      = lipgloss.Color("#FFFFFF") // Bright white - Used for: "Resets at:" text, model percentages
-	ColorBackground = lipgloss.Color("#1A1A2E") // Dark blue-black - Used for: background (when applicable)
+	ColorPrimary = lipgloss.Color("#FF8C42") // Neon orange - Used for: burn rate bars when near limit
+	ColorSuccess = lipgloss.Color("#00FF88") // Neon green - Used for: low usage indicators, success messages
+	ColorWarning = lipgloss.Color("#FF10F0") // Neon magenta - Used for: warning messages
+	ColorDanger  = lipgloss.Color("#FF006E") // Neon pink - Used for: critical warnings, cost depletion before reset
+	ColorInfo    = lipgloss.Color("#00D9FF") // Neon blue - Used for: informational text
+	ColorMuted   = lipgloss.Color("#8B7FA8") // Muted purple - Used for: subtle UI elements
+	ColorText    = lipgloss.Color("#E0E0FF") // Light purple-white - Used for: general text
+	ColorWhite   = lipgloss.Color("#FFFFFF") // Bright white - Used for: "Resets at:" text, model percentages
 )
 
 // Model Name Colours
@@ -72,21 +71,6 @@ var (
 	ColorTimeRemaining20 = lipgloss.Color("#70D000") // Lime (20-30%)
 	ColorTimeRemaining10 = lipgloss.Color("#40E040") // Light green (10-20%)
 	ColorTimeRemaining0  = ColorSuccess              // Bright green (0-10%, about to reset)
-)
-
-// Progress Bar Gradient (Blue → Purple → Red) - Currently unused but kept for future features
-var (
-	ColorProgress0  = lipgloss.Color("#00D9FF") // Neon blue (0-10%)
-	ColorProgress10 = lipgloss.Color("#00E5FF") // Light neon blue (10-20%)
-	ColorProgress20 = lipgloss.Color("#00F0FF") // Cyan (20-30%)
-	ColorProgress30 = lipgloss.Color("#40D5FF") // Sky blue (30-40%)
-	ColorProgress40 = lipgloss.Color("#80BFFF") // Light purple-blue (40-50%)
-	ColorProgress50 = lipgloss.Color("#B57EDC") // Neon purple (50-60%)
-	ColorProgress60 = lipgloss.Color("#C570D4") // Purple (60-70%)
-	ColorProgress70 = lipgloss.Color("#D560CB") // Purple-magenta (70-80%)
-	ColorProgress80 = lipgloss.Color("#E550C0") // Magenta (80-90%)
-	ColorProgress90 = lipgloss.Color("#FF40B0") // Pink-red (90-95%)
-	ColorProgress95 = lipgloss.Color("#FF2090") // Neon red (95-100%)
 )
 
 // ============================================================================
@@ -145,18 +129,10 @@ var (
 	LabelStyle = lipgloss.NewStyle().
 			Foreground(ColorMuted)
 
-	// Bright white label style
-	BrightLabelStyle = lipgloss.NewStyle().
-				Foreground(ColorWhite)
-
 	// Value style
 	ValueStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(ColorText)
-
-	// Success style
-	SuccessStyle = lipgloss.NewStyle().
-			Foreground(ColorSuccess)
 
 	// Warning style
 	WarningStyle = lipgloss.NewStyle().
@@ -175,96 +151,11 @@ var (
 			BorderForeground(ColorDanger).
 			Padding(0, 1)
 
-	// Info style
-	InfoStyle = lipgloss.NewStyle().
-			Foreground(ColorInfo)
-
-	// Box style for containers
-	BoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(ColorMuted).
-			Padding(0, 1)
-
-	// Status line style
-	StatusStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted).
-			MarginTop(1)
-
 	// Help style
 	HelpStyle = lipgloss.NewStyle().
 			Foreground(ColorMuted).
 			Italic(true)
 )
-
-// GetProgressColour returns the colour for a progress percentage with gradient from blue → purple → red
-func GetProgressColour(percent float64) lipgloss.Color {
-	switch {
-	case percent >= 95:
-		return ColorProgress95 // Neon red
-	case percent >= 90:
-		return ColorProgress90 // Pink-red
-	case percent >= 80:
-		return ColorProgress80 // Magenta
-	case percent >= 70:
-		return ColorProgress70 // Purple-magenta
-	case percent >= 60:
-		return ColorProgress60 // Purple
-	case percent >= 50:
-		return ColorProgress50 // Neon purple
-	case percent >= 40:
-		return ColorProgress40 // Light purple-blue
-	case percent >= 30:
-		return ColorProgress30 // Sky blue
-	case percent >= 20:
-		return ColorProgress20 // Cyan
-	case percent >= 10:
-		return ColorProgress10 // Light neon blue
-	default:
-		return ColorProgress0 // Neon blue
-	}
-}
-
-// GetProgressStyle returns a style for progress bars based on percentage
-func GetProgressStyle(percent float64) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(GetProgressColour(percent))
-}
-
-// GetInverseProgressColour returns the colour for an inverse progress percentage (red → blue)
-// Used for time elapsed where red at start (0%) gradually becomes blue at end (100%)
-func GetInverseProgressColour(percent float64) lipgloss.Color {
-	// Invert the percentage for color lookup
-	invertedPercent := 100 - percent
-
-	switch {
-	case invertedPercent >= 95:
-		return ColorProgress95 // Neon red at 0-5% elapsed
-	case invertedPercent >= 90:
-		return ColorProgress90 // Pink-red at 5-10% elapsed
-	case invertedPercent >= 80:
-		return ColorProgress80 // Magenta at 10-20% elapsed
-	case invertedPercent >= 70:
-		return ColorProgress70 // Purple-magenta at 20-30% elapsed
-	case invertedPercent >= 60:
-		return ColorProgress60 // Purple at 30-40% elapsed
-	case invertedPercent >= 50:
-		return ColorProgress50 // Neon purple at 40-50% elapsed
-	case invertedPercent >= 40:
-		return ColorProgress40 // Light purple-blue at 50-60% elapsed
-	case invertedPercent >= 30:
-		return ColorProgress30 // Sky blue at 60-70% elapsed
-	case invertedPercent >= 20:
-		return ColorProgress20 // Cyan at 70-80% elapsed
-	case invertedPercent >= 10:
-		return ColorProgress10 // Light neon blue at 80-90% elapsed
-	default:
-		return ColorProgress0 // Neon blue at 90-100% elapsed
-	}
-}
-
-// GetInverseProgressStyle returns a style for inverse progress bars
-func GetInverseProgressStyle(percent float64) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(GetInverseProgressColour(percent))
-}
 
 // GetPercentageColour returns the colour for percentage text (green to red)
 func GetPercentageColour(percent float64) lipgloss.Color {

@@ -1,14 +1,20 @@
 package data
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/pricing"
 )
+
+// Cheap pre-filter marker: only assistant entries carry usage data, and any
+// real assistant entry must contain this token regardless of the encoder's
+// whitespace. A false positive (the token inside a nested value) falls through
+// to the real unmarshal and type check below.
+var tokenAssistant = []byte(`"assistant"`)
 
 // RawEntry represents the actual Claude Code JSONL structure
 type RawEntry struct {
@@ -31,6 +37,10 @@ type RawEntry struct {
 func ParseJSONLLine(line []byte) (*models.UsageEntry, error) {
 	if len(line) == 0 {
 		return nil, fmt.Errorf("empty line")
+	}
+
+	if !bytes.Contains(line, tokenAssistant) {
+		return nil, nil // Cannot be an assistant entry, expected skip
 	}
 
 	var raw RawEntry
@@ -89,50 +99,4 @@ func parseTimestamp(ts string) (time.Time, error) {
 	}
 
 	return time.Time{}, fmt.Errorf("unable to parse timestamp: %s", ts)
-}
-
-// DeduplicateEntries removes duplicate entries using hash
-func DeduplicateEntries(entries []models.UsageEntry) []models.UsageEntry {
-	seen := make(map[string]bool)
-	result := make([]models.UsageEntry, 0, len(entries))
-
-	for _, entry := range entries {
-		hash := entry.Hash()
-		if !seen[hash] {
-			seen[hash] = true
-			result = append(result, entry)
-		}
-	}
-
-	return result
-}
-
-// FilterByTime filters entries to only include those within hoursBack from now
-func FilterByTime(entries []models.UsageEntry, hoursBack int) []models.UsageEntry {
-	if hoursBack <= 0 {
-		return entries
-	}
-
-	cutoff := time.Now().Add(-time.Duration(hoursBack) * time.Hour)
-	result := make([]models.UsageEntry, 0, len(entries))
-
-	for _, entry := range entries {
-		if entry.Timestamp.After(cutoff) {
-			result = append(result, entry)
-		}
-	}
-
-	return result
-}
-
-// SortEntriesByTime sorts entries by timestamp (oldest first)
-func SortEntriesByTime(entries []models.UsageEntry) []models.UsageEntry {
-	sorted := make([]models.UsageEntry, len(entries))
-	copy(sorted, entries)
-
-	slices.SortFunc(sorted, func(a, b models.UsageEntry) int {
-		return a.Timestamp.Compare(b.Timestamp)
-	})
-
-	return sorted
 }

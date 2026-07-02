@@ -15,17 +15,18 @@ import (
 // Server is an optional embedded HTTP API server that serves a JSON snapshot
 // of CCU's current usage state. It is safe for concurrent access.
 type Server struct {
-	mu         sync.RWMutex
-	snapshot   []byte
-	snapshotAt time.Time
-	config     models.APIConfig
+	mu          sync.RWMutex
+	snapshot    []byte
+	snapshotAt  time.Time
+	config      models.APIConfig
 	allowedNets []*net.IPNet
+	done        chan struct{}
 }
 
 // New creates a new Server with the given configuration.
 // CIDR ranges are parsed eagerly so any configuration errors are caught at startup.
 func New(cfg models.APIConfig) *Server {
-	s := &Server{config: cfg}
+	s := &Server{config: cfg, done: make(chan struct{})}
 	for _, cidr := range cfg.AllowedCIDRs {
 		_, ipNet, err := net.ParseCIDR(cidr)
 		if err != nil {
@@ -47,6 +48,9 @@ func (s *Server) UpdateSnapshot(data []byte) {
 
 // Start listens on the configured address and serves requests until ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
+	// Signal shutdown completion so callers can wait for a clean stop.
+	defer close(s.done)
+
 	if len(s.allowedNets) == 0 && s.config.Token == "" {
 		log.Printf("api: WARNING – server is unauthenticated and open to all hosts (consider setting -api-token or -api-allow)")
 	}
@@ -57,8 +61,12 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/status", s.handleStatus)
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	ln, err := net.Listen("tcp", addr)
@@ -82,6 +90,12 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("api: serve: %w", err)
 	}
 	return nil
+}
+
+// Done returns a channel that is closed once Start has returned, i.e. the server
+// has finished shutting down. Callers can wait on it to block for a clean stop.
+func (s *Server) Done() <-chan struct{} {
+	return s.done
 }
 
 // handleStatus serves the cached JSON snapshot with optional auth and IP allowlist checks.

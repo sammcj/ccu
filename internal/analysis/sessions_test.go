@@ -1,10 +1,12 @@
 package analysis
 
 import (
+	"math"
 	"testing"
 	"time"
 
 	"github.com/sammcj/ccu/internal/models"
+	"github.com/sammcj/ccu/internal/pricing"
 )
 
 func TestCreateSessionBlocks(t *testing.T) {
@@ -93,15 +95,12 @@ func TestCalculateBurnRate(t *testing.T) {
 	sessionStart := now.Add(-30 * time.Minute)
 	blocks := []models.SessionBlock{
 		{
-			StartTime:    sessionStart,
-			EndTime:      sessionStart.Add(5 * time.Hour),
-			TotalTokens:  3000, // Total includes cache tokens
+			StartTime:     sessionStart,
+			EndTime:       sessionStart.Add(5 * time.Hour),
+			TotalTokens:   3000, // Total includes cache tokens
 			DisplayTokens: 3000, // For this test, display = total
-			IsActive:     true,
-			IsGap:        false,
-			Entries: []models.UsageEntry{
-				{Timestamp: sessionStart, InputTokens: 2000, OutputTokens: 1000, Model: "claude-sonnet-4"},
-			},
+			IsActive:      true,
+			IsGap:         false,
 		},
 	}
 
@@ -126,9 +125,9 @@ func TestCalculateCacheHitRate(t *testing.T) {
 		{"all zero", 0, 0, 0, 0},
 		{"only fresh input", 1000, 0, 0, 0},
 		{"perfect hit rate (cache read only)", 0, 0, 1000, 100},
-		{"typical mix", 100, 200, 700, 70},                    // 700 / 1000
-		{"50% hit", 100, 100, 200, 50},                        // 200 / 400
-		{"only cache writes (no reads)", 100, 900, 0, 0},      // 0 / 1000
+		{"typical mix", 100, 200, 700, 70},                            // 700 / 1000
+		{"50% hit", 100, 100, 200, 50},                                // 200 / 400
+		{"only cache writes (no reads)", 100, 900, 0, 0},              // 0 / 1000
 		{"large numbers", 532_700, 71_600_000, 1_673_400_000, 95.868}, // approx token-stats example row
 	}
 
@@ -143,77 +142,6 @@ func TestCalculateCacheHitRate(t *testing.T) {
 	}
 }
 
-func TestCalculateSessionCacheHitRate(t *testing.T) {
-	now := time.Now()
-	block := &models.SessionBlock{
-		StartTime: now.Add(-1 * time.Hour),
-		EndTime:   now.Add(4 * time.Hour),
-		Entries: []models.UsageEntry{
-			{InputTokens: 100, CacheCreationTokens: 200, CacheReadTokens: 700},
-			{InputTokens: 50, CacheCreationTokens: 50, CacheReadTokens: 400},
-		},
-	}
-	// totals: input=150, cc=250, cr=1100, denom=1500, hit = 73.333%
-	got := CalculateSessionCacheHitRate(block)
-	want := 73.333
-	if got < want-0.01 || got > want+0.01 {
-		t.Errorf("CalculateSessionCacheHitRate = %.4f, want %.4f", got, want)
-	}
-
-	// Gap block returns 0
-	gap := &models.SessionBlock{IsGap: true}
-	if rate := CalculateSessionCacheHitRate(gap); rate != 0 {
-		t.Errorf("gap block should return 0, got %.4f", rate)
-	}
-
-	// Nil returns 0
-	if rate := CalculateSessionCacheHitRate(nil); rate != 0 {
-		t.Errorf("nil block should return 0, got %.4f", rate)
-	}
-}
-
-func TestCalculateWindowCacheHitRate(t *testing.T) {
-	now := time.Now()
-
-	blocks := []models.SessionBlock{
-		// Within last 7 days
-		{
-			StartTime: now.Add(-2 * 24 * time.Hour),
-			Entries: []models.UsageEntry{
-				{InputTokens: 100, CacheCreationTokens: 100, CacheReadTokens: 800},
-			},
-		},
-		{
-			StartTime: now.Add(-1 * 24 * time.Hour),
-			Entries: []models.UsageEntry{
-				{InputTokens: 50, CacheCreationTokens: 50, CacheReadTokens: 100},
-			},
-		},
-		// Older than 7 days - excluded
-		{
-			StartTime: now.Add(-10 * 24 * time.Hour),
-			Entries: []models.UsageEntry{
-				{InputTokens: 10000, CacheCreationTokens: 0, CacheReadTokens: 0},
-			},
-		},
-		// Gap - skipped
-		{
-			StartTime: now.Add(-1 * time.Hour),
-			IsGap:     true,
-			Entries: []models.UsageEntry{
-				{InputTokens: 999999},
-			},
-		},
-	}
-
-	got := CalculateWindowCacheHitRate(blocks, now, 7*24*time.Hour)
-	// totals: input=150, cc=150, cr=900, denom=1200, hit=75%
-	want := 75.0
-	if got < want-0.01 || got > want+0.01 {
-		t.Errorf("CalculateWindowCacheHitRate = %.4f, want %.4f", got, want)
-	}
-}
-
 func TestCalculateCostBurnRate(t *testing.T) {
 	now := time.Now()
 	sessionStart := now.Add(-1 * time.Hour)
@@ -222,8 +150,8 @@ func TestCalculateCostBurnRate(t *testing.T) {
 		StartTime: sessionStart,
 		EndTime:   sessionStart.Add(5 * time.Hour),
 		CostUSD:   6.0, // $6 over 1 hour = $0.10/min
-		Entries: []models.UsageEntry{
-			{Timestamp: sessionStart, CostUSD: 6.0},
+		PerModelStats: map[string]*models.ModelStats{
+			"claude-sonnet-4": {CostUSD: 6.0},
 		},
 	}
 
@@ -232,6 +160,53 @@ func TestCalculateCostBurnRate(t *testing.T) {
 	expected := 0.10 // $6 / 60 minutes
 	if costBurnRate < expected-0.01 || costBurnRate > expected+0.01 {
 		t.Errorf("CalculateCostBurnRate() = %.4f, want ~%.4f", costBurnRate, expected)
+	}
+}
+
+// TestSessionCostEquivalence pins CalculateSessionCost and CalculateCostBurnRate
+// to the per-entry cost semantics they had before per-model stats became the
+// authoritative cost source. It builds a single block via CreateSessionBlocks from
+// mixed-model entries - some with a pre-set CostUSD, some zero-cost-but-tokened -
+// and asserts both functions match the inline per-entry rule (pre-set cost wins,
+// otherwise price from tokens). Guards the field removal against a behaviour change.
+func TestSessionCostEquivalence(t *testing.T) {
+	base := time.Date(2025, 12, 1, 10, 0, 0, 0, time.UTC)
+	entries := []models.UsageEntry{
+		{Timestamp: base, InputTokens: 1000, OutputTokens: 500, Model: "claude-opus-4", CostUSD: 1.5},
+		{Timestamp: base.Add(30 * time.Minute), InputTokens: 2000, OutputTokens: 800, Model: "claude-sonnet-4"},
+		{Timestamp: base.Add(1 * time.Hour), InputTokens: 500, OutputTokens: 200, CacheReadTokens: 4000, Model: "claude-opus-4"},
+		{Timestamp: base.Add(90 * time.Minute), InputTokens: 100, OutputTokens: 50, Model: "claude-sonnet-4", CostUSD: 0.25},
+	}
+
+	// Current semantics: per-entry, pre-set cost wins, otherwise price from tokens.
+	expectedCost := 0.0
+	for _, e := range entries {
+		if e.CostUSD > 0 {
+			expectedCost += e.CostUSD
+		} else {
+			expectedCost += pricing.CalculateCost(e)
+		}
+	}
+
+	blocks := CreateSessionBlocks(entries)
+	if len(blocks) != 1 {
+		t.Fatalf("expected entries to form a single block, got %d", len(blocks))
+	}
+	block := blocks[0]
+
+	if got := CalculateSessionCost(&block); math.Abs(got-expectedCost) > 1e-9 {
+		t.Errorf("CalculateSessionCost() = %.10f, want %.10f", got, expectedCost)
+	}
+
+	// now sits 2 hours after the (rounded-down) session start, so elapsed is stable.
+	now := base.Add(2 * time.Hour)
+	elapsed := block.ElapsedDuration(now).Minutes()
+	if elapsed <= 0 {
+		t.Fatalf("expected positive elapsed minutes, got %f", elapsed)
+	}
+	expectedBurn := expectedCost / elapsed
+	if got := CalculateCostBurnRate(block, now); math.Abs(got-expectedBurn) > 1e-9 {
+		t.Errorf("CalculateCostBurnRate() = %.10f, want %.10f", got, expectedBurn)
 	}
 }
 
@@ -360,17 +335,98 @@ func TestCalculateBurnRate_ProportionalOverlap(t *testing.T) {
 	})
 }
 
-func TestPredictTokenDepletion(t *testing.T) {
+// TestCalculateHourlyCostBurnRate pins the exported cost burn rate to the same
+// proportional-overlap results the dashboard's inline copy produces (weight each
+// session's CostUSD by its overlap with the last hour, sum, divide by 60). The
+// wanted values are hand-computed from that formula for each fixture.
+func TestCalculateHourlyCostBurnRate(t *testing.T) {
 	now := time.Now()
-	tokenBurnRate := 100.0 // 100 tokens per minute
-	tokensRemaining := 5000
 
-	predicted := PredictTokenDepletion(tokenBurnRate, tokensRemaining, now)
+	activeEnd := now
+	shortEnd := now.Add(-10 * time.Minute)
 
-	// Should be 50 minutes from now (5000 / 100 per min)
-	expected := now.Add(50 * time.Minute)
-	diff := predicted.Sub(expected)
-	if diff < -time.Second || diff > time.Second {
-		t.Errorf("PredictTokenDepletion() = %v, want ~%v (diff: %v)", predicted, expected, diff)
+	tests := []struct {
+		name   string
+		blocks []models.SessionBlock
+		want   float64 // USD per minute
+	}{
+		{
+			name:   "empty",
+			blocks: nil,
+			want:   0,
+		},
+		{
+			name: "active session fully inside window",
+			// 30-minute active session, $6 => proportion 1.0 => $6/60 = $0.10/min.
+			blocks: []models.SessionBlock{{
+				StartTime: now.Add(-30 * time.Minute),
+				EndTime:   now.Add(4*time.Hour + 30*time.Minute),
+				CostUSD:   6.0,
+				IsActive:  true,
+			}},
+			want: 0.10,
+		},
+		{
+			name: "partial overlap contributes proportional cost",
+			// 2-hour completed session ending now, $12 => 1h/2h = 0.5 => $6/60 = $0.10/min.
+			blocks: []models.SessionBlock{{
+				StartTime:     now.Add(-2 * time.Hour),
+				EndTime:       now.Add(3 * time.Hour),
+				ActualEndTime: &activeEnd,
+				CostUSD:       12.0,
+			}},
+			want: 0.10,
+		},
+		{
+			name: "two overlapping sessions sum proportionally",
+			// A: partial overlap contributes $6. B: 30-min session inside window, $3, full.
+			// ($6 + $3) / 60 = $0.15/min.
+			blocks: []models.SessionBlock{
+				{
+					StartTime:     now.Add(-2 * time.Hour),
+					EndTime:       now.Add(3 * time.Hour),
+					ActualEndTime: &activeEnd,
+					CostUSD:       12.0,
+				},
+				{
+					StartTime:     now.Add(-40 * time.Minute),
+					EndTime:       now.Add(4*time.Hour + 20*time.Minute),
+					ActualEndTime: &shortEnd,
+					CostUSD:       3.0,
+				},
+			},
+			want: 0.15,
+		},
+		{
+			name: "gap block ignored",
+			blocks: []models.SessionBlock{{
+				StartTime: now.Add(-30 * time.Minute),
+				EndTime:   now.Add(90 * time.Minute),
+				CostUSD:   999.0,
+				IsGap:     true,
+			}},
+			want: 0,
+		},
+		{
+			name: "session that ended before the window excluded",
+			blocks: []models.SessionBlock{{
+				StartTime:     now.Add(-3 * time.Hour),
+				EndTime:       now.Add(2 * time.Hour),
+				ActualEndTime: timePtr(now.Add(-90 * time.Minute)),
+				CostUSD:       500.0,
+			}},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CalculateHourlyCostBurnRate(tt.blocks, now)
+			if got < tt.want-0.001 || got > tt.want+0.001 {
+				t.Errorf("CalculateHourlyCostBurnRate() = %.4f, want %.4f", got, tt.want)
+			}
+		})
 	}
 }
+
+func timePtr(t time.Time) *time.Time { return &t }

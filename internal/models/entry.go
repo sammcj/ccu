@@ -1,8 +1,6 @@
 package models
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"strings"
 	"time"
 )
@@ -31,11 +29,11 @@ func (e *UsageEntry) DisplayTokens() int {
 	return e.InputTokens + e.OutputTokens
 }
 
-// Hash generates a unique hash for deduplication using message_id + request_id
+// Hash returns the deduplication key for this entry. The message_id and
+// request_id pair is already unique, so the key is a plain concatenation
+// rather than a cryptographic hash - it only ever feeds an in-memory map.
 func (e *UsageEntry) Hash() string {
-	combined := fmt.Sprintf("%s:%s", e.MessageID, e.RequestID)
-	hash := sha256.Sum256([]byte(combined))
-	return fmt.Sprintf("%x", hash)
+	return e.MessageID + ":" + e.RequestID
 }
 
 // NormaliseModelName standardises model names for consistent grouping

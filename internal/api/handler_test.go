@@ -22,7 +22,7 @@ type mockState struct {
 	hasData        bool
 }
 
-func (m *mockState) GetOAuthData() *oauth.UsageData         { return m.oauthData }
+func (m *mockState) GetOAuthData() *oauth.UsageData          { return m.oauthData }
 func (m *mockState) GetCurrentSession() *models.SessionBlock { return m.currentSession }
 func (m *mockState) GetSessions() []models.SessionBlock      { return m.sessions }
 func (m *mockState) GetLimits() models.Limits                { return m.limits }
@@ -51,15 +51,15 @@ func newTestSession(now time.Time) *models.SessionBlock {
 	start := now.Add(-2 * time.Hour)
 	end := start.Add(5 * time.Hour)
 	s := &models.SessionBlock{
-		ID:           "test-session",
-		StartTime:    start,
-		EndTime:      end,
-		TotalTokens:  150000,
+		ID:            "test-session",
+		StartTime:     start,
+		EndTime:       end,
+		TotalTokens:   150000,
 		DisplayTokens: 100000,
-		CostUSD:      5.0,
-		IsActive:     true,
-		CostBurnRate: 0.05, // USD/min
-		MessageCount: 42,
+		CostUSD:       5.0,
+		IsActive:      true,
+		CostBurnRate:  0.05, // USD/min
+		MessageCount:  42,
 		PerModelStats: map[string]*models.ModelStats{
 			"claude-sonnet-4": {
 				InputTokens:  60000,
