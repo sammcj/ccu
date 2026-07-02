@@ -72,6 +72,10 @@ Table-driven tests with `testify/assert`. Run single tests: `go test -v -run Tes
 Commands available via Makefile: `make test` (race detection + coverage), `make lint`, `make modernise`.
 </TESTING>
 
+<CHANGELOG>
+Record notable changes in `CHANGELOG.md` under `## [Unreleased]`, grouped under Added/Changed/Fixed/Removed. Combine or update items refined within the same session. Never write version numbers or dates - git tags are the source of truth and CI auto-bumps them. At release time freeze the section with `make version V=X.Y.Z`, or `make stamp-version` to reuse the latest git tag. Keep `## Known Bugs` pinned above `## [Unreleased]`; truncate the oldest releases if the file exceeds 2000 lines.
+</CHANGELOG>
+
 # context-mode — MANDATORY routing rules
 
 You have context-mode MCP tools available. These rules are NOT optional — they protect your context window from flooding. A single unrouted command can dump 56 KB into context and waste the entire session.
