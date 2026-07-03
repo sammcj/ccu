@@ -4,9 +4,9 @@
 
 ## [Unreleased]
 
-### Changed
+### Fixed
 
-- Changelog conventions: agents stamp already-released content before adding entries; Known Bugs section removed
+- Weekly usage section now always shows when OAuth data is available, instead of only appearing once the API starts returning per-model (Sonnet/Opus) weekly fields
 
 ## [0.2.6] - 2026-07-03
 
@@ -17,6 +17,7 @@
 
 ### Changed
 
+- Changelog conventions: agents stamp already-released content before adding entries; Known Bugs section removed
 - JSONL parsing caches per file: active use re-parses only the file that changed instead of the whole window each refresh
 - Dashboard rendering aggregates per-model stats instead of iterating every usage entry; session blocks are only rebuilt when usage data actually changes
 - Session blocks no longer retain a copy of every usage entry, roughly halving entry memory

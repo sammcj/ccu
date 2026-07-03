@@ -83,8 +83,9 @@ func RenderDashboard(data DashboardData) string {
 
 	const barWidth = 45
 
-	// Weekly usage (if enabled) -- OAuth-only, no JSONL fallback
-	if data.Config.ShowWeekly && data.OAuthData != nil && (data.OAuthData.SevenDaySonnet != nil || data.OAuthData.SevenDayOpus != nil) {
+	// Weekly usage (if enabled) -- OAuth-only, no JSONL fallback. The combined seven_day
+	// field is always present; per-model rows appear when the API includes them.
+	if data.Config.ShowWeekly && data.OAuthData != nil {
 		output = append(output, renderWeeklyUsageFromOAuth(data.OAuthData, data.Limits, barWidth)...)
 		// Cache hit rate over the last 7 days (sourced from JSONL — OAuth has no cache breakdown)
 		if line := renderWeeklyCacheHitRate(data.AllSessions, now, barWidth); line != "" {

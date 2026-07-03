@@ -277,6 +277,29 @@ func TestRenderSessionCacheHitRateNoActivity(t *testing.T) {
 	assert.Empty(t, renderSessionCacheHitRate(&models.SessionBlock{}, barWidth))
 }
 
+func TestWeeklySectionShownWithoutPerModelFields(t *testing.T) {
+	// The API always returns the combined seven_day field but only includes
+	// seven_day_sonnet/seven_day_opus above a usage threshold. The weekly
+	// section must still render from the combined field alone.
+	now := time.Now().UTC()
+
+	oauthData := &oauth.UsageData{FetchedAt: now}
+	oauthData.FiveHour.ResetsAt = now.Add(2 * time.Hour).Format(time.RFC3339)
+	oauthData.FiveHour.Utilisation = 10
+	oauthData.SevenDay.ResetsAt = now.Add(4 * 24 * time.Hour).Format(time.RFC3339)
+	oauthData.SevenDay.Utilisation = 5
+
+	result := RenderDashboard(DashboardData{
+		Config:         models.DefaultConfig(),
+		CurrentSession: &models.SessionBlock{IsActive: true, StartTime: now.Add(-time.Hour), EndTime: now.Add(4 * time.Hour)},
+		OAuthData:      oauthData,
+	})
+
+	assert.Contains(t, result, "Weekly - All Models:")
+	assert.NotContains(t, result, "Weekly - Sonnet:")
+	assert.NotContains(t, result, "Weekly - Opus:")
+}
+
 func TestRenderWeeklyCacheHitRate(t *testing.T) {
 	now := time.Date(2025, 12, 3, 12, 0, 0, 0, time.UTC)
 	const barWidth = 45
