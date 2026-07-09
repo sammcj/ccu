@@ -393,37 +393,43 @@ func weeklyResetSuffix(resetsAt string) string {
 		resetTime.Local().Format("3:04 PM")))
 }
 
-// renderWeeklyUsageFromOAuth renders weekly usage from OAuth data (matching JSONL style)
+// renderWeeklyUsageFromOAuth renders weekly usage from OAuth data (matching JSONL style).
+// One row is emitted per model-scoped weekly limit the API reports, so a limit on a
+// model CCU has never heard of still gets a bar.
 func renderWeeklyUsageFromOAuth(oauthData *oauth.UsageData, limits models.Limits, barWidth int) []string {
-	var lines []string
-
-	// Get weekly limits based on plan
-	weeklyLimits := models.GetWeeklyLimits(strings.ToLower(limits.PlanName))
+	plan := strings.ToLower(limits.PlanName)
 
 	// Combined "All models" weekly limit (always present in API response)
-	lines = append(lines, weeklyUsageRow("Weekly - All Models:", oauthData.SevenDay.Utilisation,
-		weeklyResetSuffix(oauthData.SevenDay.ResetsAt), barWidth))
+	allModelsReset := weeklyResetSuffix(oauthData.SevenDay.ResetsAt)
+	lines := []string{weeklyUsageRow("Weekly - All Models:", oauthData.SevenDay.Utilisation,
+		allModelsReset, barWidth)}
 
-	// Sonnet
-	if oauthData.SevenDaySonnet != nil {
-		sonnetPercent := oauthData.SevenDaySonnet.Utilisation
-		limitHours := weeklyLimits.SonnetHours
-		usedHours := (sonnetPercent / 100) * limitHours
-
-		// Hours value in parentheses
-		hoursValue := GetPercentageStyle(sonnetPercent).Render(fmt.Sprintf("(%.1f / %.1f hrs)", usedHours, limitHours))
-		lines = append(lines, weeklyUsageRow("Weekly - Sonnet:", sonnetPercent, hoursValue, barWidth))
-	}
-
-	// Opus - only show if API returns SevenDayOpus with a reset time (indicates enforced limit)
-	// This auto-detects when Anthropic enables Opus weekly limits without requiring code changes
-	// Shows reset time instead of fake hours (we don't know Anthropic's actual limit)
-	if oauthData.SevenDayOpus != nil && oauthData.SevenDayOpus.ResetsAt != nil {
-		lines = append(lines, weeklyUsageRow("Weekly - Opus:", oauthData.SevenDayOpus.Utilisation,
-			weeklyResetSuffix(*oauthData.SevenDayOpus.ResetsAt), barWidth))
+	for _, limit := range oauthData.WeeklyModelLimits() {
+		label := fmt.Sprintf("Weekly - %s:", GetModelStyle(limit.ModelName()).Render(limit.Label()))
+		suffix := weeklySuffixForModel(plan, limit, allModelsReset)
+		lines = append(lines, weeklyUsageRow(label, limit.Percent, suffix, barWidth))
 	}
 
 	return lines
+}
+
+// weeklySuffixForModel picks the trailing column for a per-model weekly bar.
+// When the plan publishes an hour allowance for the model we show hours used;
+// otherwise we show the reset time rather than inventing a limit we don't know.
+// A reset time identical to the All Models row's is dropped as noise, so the
+// column only ever draws attention to a model that resets on its own schedule.
+func weeklySuffixForModel(plan string, limit oauth.Limit, allModelsReset string) string {
+	if limitHours := models.WeeklyHoursForModel(plan, limit.ModelName()); limitHours > 0 {
+		usedHours := (limit.Percent / 100) * limitHours
+		return GetPercentageStyle(limit.Percent).Render(
+			fmt.Sprintf("(%.1f / %.1f hrs)", usedHours, limitHours))
+	}
+	if limit.ResetsAt != nil {
+		if suffix := weeklyResetSuffix(*limit.ResetsAt); suffix != allModelsReset {
+			return suffix
+		}
+	}
+	return ""
 }
 
 // renderSessionMetricsFromOAuth renders session metrics from OAuth data (matching JSONL style)

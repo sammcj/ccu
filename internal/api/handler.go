@@ -72,43 +72,36 @@ func buildWeeklySection(oauthData *oauth.UsageData, cfg *models.Config, now time
 		}
 	}
 
-	// Sonnet model tier
-	if oauthData.SevenDaySonnet != nil {
-		weeklyLimits := models.PredefinedWeeklyLimits[cfg.Plan]
-		limitHours := weeklyLimits.SonnetHours
-		if limitHours > 0 {
-			usedHours := oauthData.SevenDaySonnet.Utilisation / 100.0 * limitHours
-			if resetsAt, err := oauth.ParseResetTime(oauthData.SevenDaySonnet.ResetsAt); err == nil {
-				resetsIn := int64(math.Max(0, resetsAt.Sub(now).Seconds()))
-				w.Sonnet = &WeeklyModelSection{
-					UtilisationPct:  oauthData.SevenDaySonnet.Utilisation,
-					UsedHours:       usedHours,
-					LimitHours:      limitHours,
-					ResetsAt:        resetsAt.UTC().Format(time.RFC3339),
-					ResetsInSeconds: resetsIn,
-				}
-			}
+	// Per-model weekly limits, whichever models Anthropic currently scopes one to
+	for _, limit := range oauthData.WeeklyModelLimits() {
+		modelName := limit.ModelName()
+		section := &WeeklyModelSection{
+			Model:          modelName,
+			UtilisationPct: limit.Percent,
 		}
-	}
+		if surface := limit.SurfaceName(); surface != "" {
+			section.Surface = surface
+		}
 
-	// Opus model tier – only when ResetsAt is present (Anthropic enforcing it)
-	if oauthData.SevenDayOpus != nil && oauthData.SevenDayOpus.ResetsAt != nil {
-		weeklyLimits := models.PredefinedWeeklyLimits[cfg.Plan]
-		limitHours := weeklyLimits.OpusHours
-		if resetsAt, err := oauth.ParseResetTime(*oauthData.SevenDayOpus.ResetsAt); err == nil {
-			resetsIn := int64(math.Max(0, resetsAt.Sub(now).Seconds()))
-			var usedHours float64
-			if limitHours > 0 {
-				usedHours = oauthData.SevenDayOpus.Utilisation / 100.0 * limitHours
-			}
-			w.Opus = &WeeklyModelSection{
-				UtilisationPct:  oauthData.SevenDayOpus.Utilisation,
-				UsedHours:       usedHours,
-				LimitHours:      limitHours,
-				ResetsAt:        resetsAt.UTC().Format(time.RFC3339),
-				ResetsInSeconds: resetsIn,
+		if limitHours := models.WeeklyHoursForModel(cfg.Plan, modelName); limitHours > 0 {
+			section.LimitHours = limitHours
+			section.UsedHours = limit.Percent / 100.0 * limitHours
+		}
+
+		if limit.ResetsAt != nil {
+			if resetsAt, err := oauth.ParseResetTime(*limit.ResetsAt); err == nil {
+				resetsIn := int64(math.Max(0, resetsAt.Sub(now).Seconds()))
+				section.ResetsAt = resetsAt.UTC().Format(time.RFC3339)
+				section.ResetsInSeconds = &resetsIn
 			}
 		}
+
+		if w.Scoped == nil {
+			w.Scoped = make(map[string]*WeeklyModelSection)
+		}
+		// Keyed by oauth.Limit.Key so a model with separate per-surface limits
+		// yields separate entries rather than overwriting itself.
+		w.Scoped[limit.Key()] = section
 	}
 
 	return w

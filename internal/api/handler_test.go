@@ -106,6 +106,121 @@ func newTestOAuthData(now time.Time) *oauth.UsageData {
 	}
 }
 
+func TestBuildWeeklySection_ScopedLimits(t *testing.T) {
+	now := baseTime
+	resetsAt := now.Add(4 * 24 * time.Hour).Format(time.RFC3339Nano)
+
+	oauthData := newTestOAuthData(now)
+	// The live API returns per-model limits here and nulls the legacy fields.
+	oauthData.SevenDaySonnet = nil
+	oauthData.Limits = []oauth.Limit{
+		{Kind: oauth.KindSession, Percent: 16},
+		{Kind: oauth.KindWeeklyAll, Percent: 49, IsActive: true},
+		{
+			Kind:     oauth.KindWeeklyScoped,
+			Percent:  45,
+			ResetsAt: &resetsAt,
+			Scope:    &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Fable"}},
+		},
+		{
+			Kind:     oauth.KindWeeklyScoped,
+			Percent:  25,
+			ResetsAt: &resetsAt,
+			Scope:    &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Sonnet"}},
+		},
+	}
+
+	w := buildWeeklySection(oauthData, newTestConfig(), now)
+
+	require.NotNil(t, w.AllModels)
+	require.Len(t, w.Scoped, 2)
+
+	// Fable has no published hour allowance, so hours are omitted entirely
+	fable := w.Scoped["fable"]
+	require.NotNil(t, fable)
+	assert.Equal(t, "Fable", fable.Model)
+	assert.InDelta(t, 45.0, fable.UtilisationPct, 0.01)
+	assert.Zero(t, fable.LimitHours)
+	assert.Zero(t, fable.UsedHours)
+	require.NotNil(t, fable.ResetsInSeconds)
+	assert.Greater(t, *fable.ResetsInSeconds, int64(0))
+
+	// Sonnet does, so hours are derived from the plan table
+	sonnet := w.Scoped["sonnet"]
+	require.NotNil(t, sonnet)
+	assert.Equal(t, float64(210), sonnet.LimitHours)
+	assert.InDelta(t, 210*0.25, sonnet.UsedHours, 0.1)
+}
+
+// Two limits for the same model on different surfaces must not collapse into
+// one map entry.
+func TestBuildWeeklySection_SurfaceScopedLimitsDoNotCollide(t *testing.T) {
+	now := baseTime
+	resetsAt := now.Add(4 * 24 * time.Hour).Format(time.RFC3339Nano)
+	web, cli := "web", "cli"
+
+	oauthData := newTestOAuthData(now)
+	oauthData.SevenDaySonnet = nil
+	oauthData.Limits = []oauth.Limit{
+		{
+			Kind: oauth.KindWeeklyScoped, Percent: 45, ResetsAt: &resetsAt,
+			Scope: &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Fable"}, Surface: &web},
+		},
+		{
+			Kind: oauth.KindWeeklyScoped, Percent: 12, ResetsAt: &resetsAt,
+			Scope: &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Fable"}, Surface: &cli},
+		},
+	}
+
+	w := buildWeeklySection(oauthData, newTestConfig(), now)
+
+	require.Len(t, w.Scoped, 2)
+	require.NotNil(t, w.Scoped["fable/web"])
+	require.NotNil(t, w.Scoped["fable/cli"])
+	assert.InDelta(t, 45.0, w.Scoped["fable/web"].UtilisationPct, 0.01)
+	assert.Equal(t, "web", w.Scoped["fable/web"].Surface)
+	assert.InDelta(t, 12.0, w.Scoped["fable/cli"].UtilisationPct, 0.01)
+	assert.Equal(t, "cli", w.Scoped["fable/cli"].Surface)
+}
+
+// A limit resetting right now must serialise resets_in_seconds as 0, not omit it.
+func TestBuildWeeklySection_ZeroResetsInSecondsIsRetained(t *testing.T) {
+	now := baseTime
+	resetsAt := now.Format(time.RFC3339Nano)
+
+	oauthData := newTestOAuthData(now)
+	oauthData.SevenDaySonnet = nil
+	oauthData.Limits = []oauth.Limit{{
+		Kind: oauth.KindWeeklyScoped, Percent: 45, ResetsAt: &resetsAt,
+		Scope: &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Fable"}},
+	}}
+
+	w := buildWeeklySection(oauthData, newTestConfig(), now)
+
+	require.NotNil(t, w.Scoped["fable"].ResetsInSeconds)
+	assert.Equal(t, int64(0), *w.Scoped["fable"].ResetsInSeconds)
+
+	raw, err := json.Marshal(w.Scoped["fable"])
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"resets_in_seconds":0`)
+}
+
+func TestBuildWeeklySection_NoScopedLimits(t *testing.T) {
+	now := baseTime
+	oauthData := newTestOAuthData(now)
+	oauthData.SevenDaySonnet = nil
+
+	w := buildWeeklySection(oauthData, newTestConfig(), now)
+
+	require.NotNil(t, w.AllModels)
+	assert.Empty(t, w.Scoped)
+
+	// An empty map must serialise away rather than appearing as "scoped": {}
+	raw, err := json.Marshal(w)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "scoped")
+}
+
 func TestBuildStatusResponse_FullData(t *testing.T) {
 	now := baseTime
 	session := newTestSession(now)
@@ -138,13 +253,16 @@ func TestBuildStatusResponse_FullData(t *testing.T) {
 	assert.InDelta(t, 30.0, resp.Weekly.AllModels.UtilisationPct, 0.01)
 	assert.Greater(t, resp.Weekly.AllModels.ResetsInSeconds, int64(0))
 
-	require.NotNil(t, resp.Weekly.Sonnet)
-	assert.InDelta(t, 25.0, resp.Weekly.Sonnet.UtilisationPct, 0.01)
-	assert.Equal(t, float64(210), resp.Weekly.Sonnet.LimitHours)
-	assert.InDelta(t, 210*0.25, resp.Weekly.Sonnet.UsedHours, 0.1)
+	// Legacy seven_day_sonnet is surfaced through the generic scoped map
+	require.Contains(t, resp.Weekly.Scoped, "sonnet")
+	sonnet := resp.Weekly.Scoped["sonnet"]
+	assert.Equal(t, "Sonnet", sonnet.Model)
+	assert.InDelta(t, 25.0, sonnet.UtilisationPct, 0.01)
+	assert.Equal(t, float64(210), sonnet.LimitHours)
+	assert.InDelta(t, 210*0.25, sonnet.UsedHours, 0.1)
 
-	// Opus nil (no ResetsAt in test data)
-	assert.Nil(t, resp.Weekly.Opus)
+	// Opus absent (no ResetsAt in test data, so not enforced)
+	assert.NotContains(t, resp.Weekly.Scoped, "opus")
 
 	// Session section – utilisation comes from OAuth FiveHour.Utilisation (45%), not local cost
 	require.NotNil(t, resp.Session)

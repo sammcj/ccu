@@ -13,11 +13,13 @@ type StatusResponse struct {
 	Prediction     *PredictionSection `json:"prediction,omitempty"`
 }
 
-// WeeklySection holds weekly usage data broken down by model tier
+// WeeklySection holds weekly usage data broken down by model tier.
+// Scoped is keyed by lowercased model name (e.g. "sonnet", "fable") and only
+// contains models Anthropic reports a per-model weekly limit for, so its keys
+// vary by account and over time. Consumers should iterate rather than index.
 type WeeklySection struct {
-	AllModels *WeeklyAllSection   `json:"all_models,omitempty"`
-	Sonnet    *WeeklyModelSection `json:"sonnet,omitempty"`
-	Opus      *WeeklyModelSection `json:"opus,omitempty"`
+	AllModels *WeeklyAllSection              `json:"all_models,omitempty"`
+	Scoped    map[string]*WeeklyModelSection `json:"scoped,omitempty"`
 }
 
 // WeeklyAllSection holds aggregate weekly usage across all models
@@ -27,13 +29,21 @@ type WeeklyAllSection struct {
 	ResetsInSeconds int64   `json:"resets_in_seconds"`
 }
 
-// WeeklyModelSection holds weekly usage for a specific model tier
+// WeeklyModelSection holds weekly usage for a specific model tier.
+// UsedHours and LimitHours are omitted for models the plan publishes no hour
+// allowance for; only Model and UtilisationPct are guaranteed.
+// Surface is set only when the limit applies to one surface (e.g. "web") rather
+// than the whole account.
+// ResetsInSeconds is a pointer so that a limit resetting right now serialises as
+// 0 rather than being dropped by omitempty.
 type WeeklyModelSection struct {
+	Model           string  `json:"model"`
+	Surface         string  `json:"surface,omitempty"`
 	UtilisationPct  float64 `json:"utilisation_pct"`
-	UsedHours       float64 `json:"used_hours"`
-	LimitHours      float64 `json:"limit_hours"`
-	ResetsAt        string  `json:"resets_at"`
-	ResetsInSeconds int64   `json:"resets_in_seconds"`
+	UsedHours       float64 `json:"used_hours,omitempty"`
+	LimitHours      float64 `json:"limit_hours,omitempty"`
+	ResetsAt        string  `json:"resets_at,omitempty"`
+	ResetsInSeconds *int64  `json:"resets_in_seconds,omitempty"`
 }
 
 // SessionSection holds current 5-hour session data

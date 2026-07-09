@@ -1,5 +1,7 @@
 package models
 
+import "strings"
+
 // WeeklyLimits defines weekly limits by plan
 type WeeklyLimits struct {
 	SonnetHours float64
@@ -31,4 +33,20 @@ func GetWeeklyLimits(plan string) WeeklyLimits {
 	}
 	// Return Pro as default
 	return PredefinedWeeklyLimits["pro"]
+}
+
+// WeeklyHoursForModel returns the plan's weekly hour allowance for a model,
+// matched against the API's display name (e.g. "Sonnet", "Opus", "Fable").
+// Returns 0 when we have no published hour figure for that model, in which case
+// callers should present the raw utilisation percentage rather than invent one.
+func WeeklyHoursForModel(plan, displayName string) float64 {
+	limits := GetWeeklyLimits(plan)
+	switch {
+	case strings.Contains(strings.ToLower(displayName), "sonnet"):
+		return limits.SonnetHours
+	case strings.Contains(strings.ToLower(displayName), "opus"):
+		return limits.OpusHours
+	default:
+		return 0
+	}
 }

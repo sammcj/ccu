@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/oauth"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFormatModelNameSimple(t *testing.T) {
@@ -298,6 +300,117 @@ func TestWeeklySectionShownWithoutPerModelFields(t *testing.T) {
 	assert.Contains(t, result, "Weekly - All Models:")
 	assert.NotContains(t, result, "Weekly - Sonnet:")
 	assert.NotContains(t, result, "Weekly - Opus:")
+}
+
+func TestRenderWeeklyUsageFromOAuth_ScopedLimits(t *testing.T) {
+	now := time.Now().UTC()
+	resetsAt := now.Add(4 * 24 * time.Hour).Format(time.RFC3339)
+
+	oauthData := &oauth.UsageData{FetchedAt: now}
+	oauthData.SevenDay.ResetsAt = resetsAt
+	oauthData.SevenDay.Utilisation = 49
+	oauthData.Limits = []oauth.Limit{
+		{Kind: oauth.KindWeeklyAll, Percent: 49},
+		{
+			Kind:     oauth.KindWeeklyScoped,
+			Percent:  45,
+			ResetsAt: &resetsAt,
+			Scope:    &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Fable"}},
+		},
+		{
+			Kind:     oauth.KindWeeklyScoped,
+			Percent:  25,
+			ResetsAt: &resetsAt,
+			Scope:    &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Sonnet"}},
+		},
+	}
+
+	limits := models.Limits{PlanName: "max5"}
+	lines := renderWeeklyUsageFromOAuth(oauthData, limits, 45)
+
+	require.Len(t, lines, 3)
+	assert.Contains(t, lines[0], "Weekly - All Models:")
+
+	// Sorted by model name, so Fable precedes Sonnet
+	assert.Contains(t, lines[1], "Fable")
+	assert.Contains(t, lines[1], "45.0%")
+	// Fable has no published hour allowance, and its reset matches All Models,
+	// so the trailing column is dropped rather than repeating the same time
+	assert.NotContains(t, lines[1], "[Resets:")
+	assert.NotContains(t, lines[1], "hrs")
+
+	assert.Contains(t, lines[2], "Sonnet")
+	assert.Contains(t, lines[2], "(52.5 / 210.0 hrs)")
+}
+
+// A model that resets on its own schedule still shows its reset time.
+func TestRenderWeeklyUsageFromOAuth_DistinctResetTimeIsShown(t *testing.T) {
+	now := time.Now().UTC()
+	allReset := now.Add(4 * 24 * time.Hour).Format(time.RFC3339)
+	fableReset := now.Add(6 * 24 * time.Hour).Format(time.RFC3339)
+
+	oauthData := &oauth.UsageData{FetchedAt: now}
+	oauthData.SevenDay.ResetsAt = allReset
+	oauthData.SevenDay.Utilisation = 49
+	oauthData.Limits = []oauth.Limit{{
+		Kind:     oauth.KindWeeklyScoped,
+		Percent:  45,
+		ResetsAt: &fableReset,
+		Scope:    &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Fable"}},
+	}}
+
+	lines := renderWeeklyUsageFromOAuth(oauthData, models.Limits{PlanName: "max5"}, 45)
+
+	require.Len(t, lines, 2)
+	assert.Contains(t, lines[1], "[Resets:")
+}
+
+// Sub-second differences in resets_at must not defeat the redundancy check,
+// since the rendered time only has minute granularity.
+func TestRenderWeeklyUsageFromOAuth_SubSecondResetDriftIsTreatedAsSame(t *testing.T) {
+	now := time.Now().UTC().Add(4 * 24 * time.Hour).Truncate(time.Hour)
+	allReset := now.Format("2006-01-02T15:04:05.000000Z07:00")
+	fableReset := now.Add(337 * time.Microsecond).Format("2006-01-02T15:04:05.000000Z07:00")
+	require.NotEqual(t, allReset, fableReset)
+
+	oauthData := &oauth.UsageData{FetchedAt: time.Now().UTC()}
+	oauthData.SevenDay.ResetsAt = allReset
+	oauthData.Limits = []oauth.Limit{{
+		Kind:     oauth.KindWeeklyScoped,
+		Percent:  45,
+		ResetsAt: &fableReset,
+		Scope:    &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Fable"}},
+	}}
+
+	lines := renderWeeklyUsageFromOAuth(oauthData, models.Limits{PlanName: "max5"}, 45)
+
+	require.Len(t, lines, 2)
+	assert.NotContains(t, lines[1], "[Resets:")
+}
+
+func TestRenderWeeklyUsageFromOAuth_UnknownModelStillRenders(t *testing.T) {
+	now := time.Now().UTC()
+	resetsAt := now.Add(4 * 24 * time.Hour).Format(time.RFC3339)
+
+	oauthData := &oauth.UsageData{FetchedAt: now}
+	oauthData.SevenDay.ResetsAt = resetsAt
+	oauthData.Limits = []oauth.Limit{{
+		Kind:     oauth.KindWeeklyScoped,
+		Percent:  12,
+		ResetsAt: &resetsAt,
+		Scope:    &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Nimbus"}},
+	}}
+
+	const barWidth = 30
+	lines := renderWeeklyUsageFromOAuth(oauthData, models.Limits{PlanName: "max5"}, barWidth)
+
+	require.Len(t, lines, 2)
+	assert.Contains(t, lines[1], "Nimbus")
+	assert.Contains(t, lines[1], "12.0%")
+
+	// The bar honours the requested width: barWidth-2 cells between the brackets
+	cells := strings.Count(lines[1], "█") + strings.Count(lines[1], "░")
+	assert.Equal(t, barWidth-2, cells)
 }
 
 func TestRenderWeeklyCacheHitRate(t *testing.T) {

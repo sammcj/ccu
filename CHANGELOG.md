@@ -4,9 +4,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- Weekly usage bars for any model Anthropic scopes an individual weekly limit to, driven by the `limits` array the OAuth usage API now returns. Fable's weekly limit shows up automatically, as will any future model's, with no code change
+- Colours for the Fable (hot pink) and Mythos (red) model names, plus a neutral fallback colour for models CCU doesn't recognise
+
+### Changed
+
+- A per-model weekly bar omits its reset time when it matches the All Models row, so the column only draws attention to a model resetting on its own schedule
+- `GET /api/status`: the `weekly.sonnet` and `weekly.opus` objects are replaced by a `weekly.scoped` map keyed by lowercased model name (suffixed `/<surface>` for surface-scoped limits), with a `model` field carrying the API's display name. `used_hours` and `limit_hours` are now omitted for models with no published hour allowance rather than reported as zero
+
 ### Fixed
 
 - Weekly usage section now always shows when OAuth data is available, instead of only appearing once the API starts returning per-model (Sonnet/Opus) weekly fields
+- Per-model weekly bars no longer disappear when Anthropic nulls the legacy `seven_day_sonnet` / `seven_day_opus` response fields, which it now does
 
 ## [0.2.6] - 2026-07-03
 

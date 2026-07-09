@@ -27,11 +27,19 @@ var (
 )
 
 // Model Name Colours
-// Used for colour-coding model names in session distribution display
+// Used for colour-coding model names in session distribution and per-model weekly bars.
+// Opus already occupies the pale end of the pink range, so Fable takes a saturated
+// hot pink to stay distinguishable from it at a glance.
 var (
 	ColorSonnet = lipgloss.Color("#0088FF") // Blue - Used for: "Sonnet 4.5", "Sonnet 4", "Sonnet 3.5" model names
 	ColorOpus   = lipgloss.Color("#FFB3D9") // Mellow pink - Used for: "Opus 4.5", "Opus 4", "Opus 3" model names
 	ColorHaiku  = lipgloss.Color("#9B72CF") // Violet - Used for: "Haiku 4.5", "Haiku 3.5", "Haiku 3" model names
+	ColorFable  = lipgloss.Color("#FF4FA3") // Hot pink - Used for: "Fable" model names
+	ColorMythos = lipgloss.Color("#E5484D") // Red - Used for: "Mythos" model names
+
+	// ColorModelUnknown is the fallback for a model name we don't recognise —
+	// the API can introduce a new model at any time and we still need to label it.
+	ColorModelUnknown = lipgloss.Color("#D4D4E0") // Off-white grey
 )
 
 // UI Element Colours
@@ -80,11 +88,13 @@ var (
 // This section documents exactly which UI elements use which colours:
 //
 // WEEKLY USAGE (OAuth or JSONL):
-//   - "Weekly - Sonnet:" bar          → ColorPercent* (based on percentage)
-//   - "Weekly - Sonnet:" percentage   → ColorPercent* (based on percentage)
-//   - "Weekly - Sonnet:" hours value  → ColorPercent* (based on percentage)
+//   - "Weekly - <Model>:" bar         → ColorPercent* (based on percentage)
+//   - "Weekly - <Model>:" percentage  → ColorPercent* (based on percentage)
+//   - "Weekly - <Model>:" hours value → ColorPercent* (based on percentage)
 //   - "[Resets: Mon 6:00 AM]"         → ColorWhite
-//   - Same applies for "Weekly - Opus:"
+//
+// One row is rendered per model-scoped weekly limit the API reports
+// (Sonnet, Opus, Fable, ...), so the set of rows is data-driven.
 //
 // BURN RATE:
 //   - "Burn Rate - Tokens:" bar       → ColorPercent* (based on burn rate %)
@@ -95,7 +105,8 @@ var (
 // SESSION USAGE:
 //   - "Session - Usage:" bar          → ColorPercent* (based on percentage)
 //   - "Session - Usage:" percentage   → ColorPercent* (based on percentage)
-//   - Model names in distribution     → ColorSonnet / ColorOpus / ColorHaiku
+//   - Model names in distribution     → ColorSonnet / ColorOpus / ColorHaiku /
+//     ColorFable / ColorMythos / ColorModelUnknown
 //   - Model percentage values         → ColorWhite
 //
 // TIME REMAINING:
@@ -247,17 +258,23 @@ func GetTimeRemainingStyle(percent float64) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(GetTimeRemainingColour(percent))
 }
 
-// GetModelColour returns the colour for a model name
+// GetModelColour returns the colour for a model name, falling back to a neutral
+// off-white for models CCU doesn't know about yet.
 func GetModelColour(modelName string) lipgloss.Color {
 	lowerModel := strings.ToLower(modelName)
-	if strings.Contains(lowerModel, "sonnet") {
-		return ColorSonnet
-	} else if strings.Contains(lowerModel, "haiku") {
-		return ColorHaiku
-	} else if strings.Contains(lowerModel, "opus") {
+	switch {
+	case strings.Contains(lowerModel, "fable"):
+		return ColorFable
+	case strings.Contains(lowerModel, "mythos"):
+		return ColorMythos
+	case strings.Contains(lowerModel, "opus"):
 		return ColorOpus
+	case strings.Contains(lowerModel, "sonnet"):
+		return ColorSonnet
+	case strings.Contains(lowerModel, "haiku"):
+		return ColorHaiku
 	}
-	return ColorWhite // Default white for unknown models
+	return ColorModelUnknown
 }
 
 // GetModelStyle returns a style for model names

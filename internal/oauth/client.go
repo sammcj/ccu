@@ -94,6 +94,84 @@ type KeychainCredentials struct {
 	ClaudeAiOAuth ClaudeAiOAuth `json:"claudeAiOauth"`
 }
 
+// Limit kinds reported in the API's `limits` array.
+const (
+	KindSession      = "session"
+	KindWeeklyAll    = "weekly_all"
+	KindWeeklyScoped = "weekly_scoped"
+)
+
+// LimitModel identifies the model a limit applies to. `id` is frequently null
+// while `display_name` (e.g. "Fable") is always populated.
+type LimitModel struct {
+	DisplayName string  `json:"display_name"`
+	ID          *string `json:"id"`
+}
+
+// LimitScope narrows a limit to a particular model and/or surface.
+// Both fields are nil on unscoped (account-wide) limits.
+type LimitScope struct {
+	Model   *LimitModel `json:"model"`
+	Surface *string     `json:"surface"`
+}
+
+// Limit is one entry of the API's self-describing `limits` array. Anthropic
+// added this array to express per-model limits (Fable's weekly cap being the
+// first) without minting a new top-level field per model, so a limit for a
+// future model arrives here needing no change on our side.
+//
+// IsActive marks the limit currently binding the account rather than one being
+// enforced: a live 5-hour session and an enforced Fable weekly cap both report
+// is_active=false while the highest weekly bucket reports true. Do not read it
+// as "this limit applies".
+type Limit struct {
+	Group    string      `json:"group"`
+	Kind     string      `json:"kind"`
+	Percent  float64     `json:"percent"`
+	ResetsAt *string     `json:"resets_at"`
+	Scope    *LimitScope `json:"scope"`
+	Severity string      `json:"severity"`
+	IsActive bool        `json:"is_active"`
+}
+
+// ModelName returns the display name of the model this limit is scoped to,
+// or an empty string when the limit is not model-scoped.
+func (l Limit) ModelName() string {
+	if l.Scope == nil || l.Scope.Model == nil {
+		return ""
+	}
+	return l.Scope.Model.DisplayName
+}
+
+// SurfaceName returns the surface this limit is narrowed to (e.g. "web"), or an
+// empty string when it applies across all surfaces. Anthropic returns null here
+// today, but the field exists so a limit can be scoped to a model on one surface.
+func (l Limit) SurfaceName() string {
+	if l.Scope == nil || l.Scope.Surface == nil {
+		return ""
+	}
+	return *l.Scope.Surface
+}
+
+// Key uniquely identifies a scoped limit. Model name alone is not unique: the
+// same model can carry separate limits per surface, and keying on the model
+// would silently collapse them into one.
+func (l Limit) Key() string {
+	key := strings.ToLower(l.ModelName())
+	if surface := l.SurfaceName(); surface != "" {
+		key += "/" + strings.ToLower(surface)
+	}
+	return key
+}
+
+// Label renders the limit's scope for display, e.g. "Fable" or "Fable (web)".
+func (l Limit) Label() string {
+	if surface := l.SurfaceName(); surface != "" {
+		return fmt.Sprintf("%s (%s)", l.ModelName(), surface)
+	}
+	return l.ModelName()
+}
+
 // UsageData represents the OAuth API response structure
 type UsageData struct {
 	FiveHour struct {
@@ -104,6 +182,9 @@ type UsageData struct {
 		Utilisation float64 `json:"utilization"`
 		ResetsAt    string  `json:"resets_at"`
 	} `json:"seven_day"`
+	// Limits supersedes the SevenDaySonnet/SevenDayOpus fields below, which
+	// Anthropic now returns as null. Read it via WeeklyModelLimits.
+	Limits         []Limit `json:"limits"`
 	SevenDaySonnet *struct {
 		Utilisation float64 `json:"utilization"`
 		ResetsAt    string  `json:"resets_at"`
@@ -119,6 +200,60 @@ type UsageData struct {
 		Utilisation  *float64 `json:"utilization"`
 	} `json:"extra_usage"`
 	FetchedAt time.Time `json:"-"` // When this data was fetched (not from API)
+}
+
+// WeeklyModelLimits returns the weekly limits scoped to an individual model,
+// sorted by Key so bar ordering stays stable across refreshes.
+//
+// Prefers the self-describing `limits` array. When that is absent (older API
+// responses) it synthesises equivalent entries from the legacy
+// seven_day_sonnet / seven_day_opus fields, so callers get one uniform list
+// either way and never branch on which source produced it. The fallback is
+// all-or-nothing: we assume Anthropic nulls the legacy fields once it populates
+// `limits`, as it does today. A response carrying both would show only the
+// `limits` entries.
+func (u *UsageData) WeeklyModelLimits() []Limit {
+	scoped := make([]Limit, 0, len(u.Limits))
+	for _, l := range u.Limits {
+		if l.Kind == KindWeeklyScoped && l.ModelName() != "" {
+			scoped = append(scoped, l)
+		}
+	}
+
+	if len(scoped) == 0 {
+		scoped = u.legacyWeeklyModelLimits()
+	}
+
+	slices.SortStableFunc(scoped, func(a, b Limit) int {
+		return strings.Compare(a.Key(), b.Key())
+	})
+	return scoped
+}
+
+// legacyWeeklyModelLimits maps the pre-`limits` response shape onto []Limit.
+// Opus is only included when it carries a reset time: that was the signal
+// Anthropic used to indicate the Opus weekly cap was actually being enforced.
+func (u *UsageData) legacyWeeklyModelLimits() []Limit {
+	var out []Limit
+	if u.SevenDaySonnet != nil {
+		resetsAt := u.SevenDaySonnet.ResetsAt
+		out = append(out, newScopedWeeklyLimit("Sonnet", u.SevenDaySonnet.Utilisation, &resetsAt))
+	}
+	if u.SevenDayOpus != nil && u.SevenDayOpus.ResetsAt != nil {
+		out = append(out, newScopedWeeklyLimit("Opus", u.SevenDayOpus.Utilisation, u.SevenDayOpus.ResetsAt))
+	}
+	return out
+}
+
+func newScopedWeeklyLimit(displayName string, percent float64, resetsAt *string) Limit {
+	return Limit{
+		Group:    "weekly",
+		Kind:     KindWeeklyScoped,
+		Percent:  percent,
+		ResetsAt: resetsAt,
+		Scope:    &LimitScope{Model: &LimitModel{DisplayName: displayName}},
+		Severity: "normal",
+	}
 }
 
 // EffectiveFiveHour returns the five-hour utilisation adjusted for session rollover.

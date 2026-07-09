@@ -8,7 +8,7 @@ A performant terminal dashboard for monitoring Claude Code usage, built in Go us
 
 - **Live Claude API Usage Data** - Near real-time usage stats from Anthropic's servers with exact reset times
 - **5-Hour Session Tracking**: Monitor rolling 5-hour usage windows with OAuth utilisation percentage
-- **Weekly Limits**: Track 7-day rolling usage for Sonnet and Opus models separately
+- **Weekly Limits**: Track 7-day rolling usage overall, plus a separate bar for each model Anthropic applies an individual weekly limit to
 - **Real-time Dashboard**: Live updating terminal UI with colour-coded progress bars
 - **Burn Rate Monitoring**: Dual burn rate display - tokens/minute and cost/hour with visual indicators
 - **Intelligent Predictions**: Cost depletion time with colour-coded warnings (red if before reset, orange if close, green if safe)
@@ -141,7 +141,10 @@ Example response (fields are omitted when data is unavailable):
   "data_age_seconds": 15,
   "weekly": {
     "all_models": { "utilisation_pct": 30.5, "resets_at": "2026-02-25T00:00:00Z", "resets_in_seconds": 594000 },
-    "sonnet":     { "utilisation_pct": 25.0, "used_hours": 52.5, "limit_hours": 210, "resets_at": "...", "resets_in_seconds": 594000 }
+    "scoped": {
+      "sonnet": { "model": "Sonnet", "utilisation_pct": 25.0, "used_hours": 52.5, "limit_hours": 210, "resets_at": "...", "resets_in_seconds": 594000 },
+      "fable":  { "model": "Fable",  "utilisation_pct": 45.0, "resets_at": "...", "resets_in_seconds": 594000 }
+    }
   },
   "session": {
     "utilisation_pct": 42.0,
@@ -179,6 +182,10 @@ Returns `503` with `{"error":"no data"}` before the first data load completes.
 - If both `-api-allow` and `-api-token` are unset, CCU logs a warning at startup. Only do this on a fully trusted, isolated network.
 - IP allowlist is checked before auth so the existence of an auth requirement is not leaked to blocked hosts.
 - `weekly` fields are only present when OAuth is active; they are omitted in JSONL-only mode.
+
+The keys of `weekly.scoped` vary by account and change whenever Anthropic adds or drops a per-model weekly limit, so consumers should iterate the map rather than index a fixed key.
+Keys are the lowercased model name, suffixed with `/<surface>` when a limit applies to one surface only (e.g. `fable/web`).
+Only `model` and `utilisation_pct` are guaranteed on each entry: `used_hours` and `limit_hours` are omitted for models with no published hour allowance, since CCU would otherwise have to invent a limit it doesn't know.
 
 ## How It Works
 
@@ -257,10 +264,15 @@ Cost-based predictions are more accurate than token-based for mixed-model usage 
 
 ### Weekly Tracking
 
-Weekly limits are tracked over a rolling 7-day window:
-- Separates Sonnet and Opus usage
-- Converts tokens to estimated hours (Sonnet: ~5k tokens/hour, Opus: ~3k tokens/hour)
-- Displays progress against plan limits
+Weekly limits are tracked over a rolling 7-day window. CCU shows an "All Models" bar plus one bar per model
+that Anthropic currently applies an individual weekly limit to.
+
+Which models those are is read from the `limits` array in the OAuth usage API response, where each per-model
+limit arrives as a `weekly_scoped` entry naming its model. Nothing is hardcoded, so when Anthropic adds a
+limit for a new model (as it did for Fable) the bar appears without a CCU update.
+
+Where the plan publishes an hour allowance for a model, the bar shows hours used against it. Where it doesn't,
+the bar shows the reset time instead of an invented limit.
 
 ## Plan Limits
 

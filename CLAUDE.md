@@ -33,6 +33,17 @@ produce accurate percentages because the hardcoded plan limits don't match Anthr
 
 **OAuth retry**: When OAuth is disabled it automatically retries after 5 minutes, including for token-expired errors (Claude Code usually refreshes the token itself). Only the missing-scope error (`oauth.ErrMissingScope`, fixed by `claude logout && claude login`) never auto-retries - see `oauth.RequiresUserAction()`.
 
+**Per-model weekly limits come from `limits[]`**: The usage API returns `seven_day_sonnet` and
+`seven_day_opus` as null now. Per-model weekly limits arrive as `weekly_scoped` entries in the
+`limits` array, each naming its model via `scope.model.display_name`. Read them through
+`UsageData.WeeklyModelLimits()`, which prefers `limits[]` and falls back to the legacy fields.
+Never add a hardcoded top-level field for a new model - the array already handles them.
+
+**Unknown models must still render**: Anthropic can scope a limit to a model CCU has never heard of.
+`models.WeeklyHoursForModel()` returns 0 when a plan publishes no hour allowance; show the reset time
+rather than deriving hours from a limit we don't know. `ui.GetModelColour()` falls back to
+`ColorModelUnknown` for the same reason.
+
 **Time handling**: All times converted to UTC. Session blocks round start times DOWN to current hour.
 
 **Plan limits**: Claude has NO per-5-hour-session token limits. The ~200k context window is per-conversation, not per-session. `TokenLimit` field in `models.Limits` is always 0 for predefined plans.
