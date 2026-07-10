@@ -112,6 +112,11 @@ func RenderDashboard(data DashboardData) string {
 	// Show burn rates on one line
 	output = append(output, renderBurnRates(burnRate, costBurnRate, data.Limits, barWidth, sessionResetTime))
 
+	// Session cache hit rate — JSONL-derived, available regardless of OAuth status
+	if line := renderSessionCacheHitRate(data.CurrentSession, barWidth); line != "" {
+		output = append(output, line)
+	}
+
 	// Get session distribution for appending to session usage line
 	sessionDistribution := getSessionDistributionString(data.CurrentSession)
 
@@ -120,11 +125,6 @@ func RenderDashboard(data DashboardData) string {
 		output = append(output, renderSessionMetricsFromOAuth(data.OAuthData, sessionDistribution, barWidth, now)...)
 	} else {
 		output = append(output, renderSessionFallback(data.CurrentSession, sessionDistribution, now, data.OAuthUnavailableReason)...)
-	}
-
-	// Session cache hit rate — JSONL-derived, available regardless of OAuth status
-	if line := renderSessionCacheHitRate(data.CurrentSession, barWidth); line != "" {
-		output = append(output, line)
 	}
 
 	output = append(output, "") // Blank line before prediction
@@ -484,7 +484,7 @@ func renderSessionMetricsFromOAuth(oauthData *oauth.UsageData, sessionDistributi
 
 	timeLine := formatRow(
 		"⏱️",
-		"Time Before Reset:",
+		"Session - Reset:",
 		timeStyle.Render(timeBar),
 		timeStyle.Render(fmt.Sprintf("%.1f%%", remainingPercent)),
 		timeStyle.Render(fmt.Sprintf("⏱️ Remaining: %.1f / %.1f hours", remaining, totalSessionDuration.Hours())),

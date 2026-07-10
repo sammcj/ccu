@@ -67,7 +67,7 @@ var (
 
 // Time Remaining Gradient (Gold → Green)
 // Creates a countdown colour scheme where more time = gold, less time = green
-// Used for: "Time Before Reset" bar and percentage, "Remaining: X / 5.0 hours" text
+// Used for: "Session - Reset" bar and percentage, "Remaining: X / 5.0 hours" text
 var (
 	ColorTimeRemaining90 = lipgloss.Color("#FFD700") // Gold (90-100%)
 	ColorTimeRemaining80 = lipgloss.Color("#FFC700") // Slightly darker gold (80-90%)
@@ -110,8 +110,8 @@ var (
 //   - Model percentage values         → ColorWhite
 //
 // TIME REMAINING:
-//   - "Time Before Reset" bar         → ColorTimeRemaining* (based on % remaining)
-//   - "Time Before Reset" percentage  → ColorTimeRemaining* (based on % remaining)
+//   - "Session - Reset" bar           → ColorTimeRemaining* (based on % remaining)
+//   - "Session - Reset" percentage    → ColorTimeRemaining* (based on % remaining)
 //   - "Remaining: X / 5.0 hours"      → ColorTimeRemaining* (based on % remaining)
 //
 // PREDICTION:

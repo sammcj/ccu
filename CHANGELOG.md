@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The session cache hit rate row moves up to sit directly below the burn rate rows, above session usage
+- Renamed the "Time Before Reset" row to "Session - Reset" so it groups with the other session rows
+
+
+## [0.2.6] - 2026-07-10
+
 ### Added
 
 - Weekly usage bars for any model Anthropic scopes an individual weekly limit to, driven by the `limits` array the OAuth usage API now returns. Fable's weekly limit shows up automatically, as will any future model's, with no code change
