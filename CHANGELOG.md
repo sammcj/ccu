@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Opus 5 was detected as Opus 4 and costed at $15/$75 per million tokens instead of $5/$25, overstating every Opus 5 cost by 3x and skewing burn rate and depletion predictions. Sonnet 5 and Haiku 5 were similarly mapped to older generations. Model normalisation now parses the version out of the model ID instead of matching against a list of known versions, so a model released after this code was written normalises to its own name rather than to its family's oldest generation
+
+- Model IDs that put the version before the family (`claude-4-opus-20250514`, which Anthropic still publishes) were read as unversioned and priced as the newest model in that family. Both ID shapes are now parsed
+
+### Added
+
+- Pricing for Opus 5 and Sonnet 5, including Sonnet 5's introductory rate of $2/$10 per million tokens
+- Per-family fallback pricing, used when a model normalises to a version with no published rate. A new Opus version now costs Opus rates rather than falling through to the Sonnet fallback
+- The dashboard names any model CCU has no published rate for and marks the costs as estimates, instead of presenting a fallback rate as measured
+- A weekly CI job runs `ccu -check-models` and opens an issue when the pricing tables drift from upstream
+
+### Changed
+
+- An unversioned model name (`opus`, `sonnet`, `fable` - these appear in some Claude Code JSONL entries) now resolves to that family's newest release rather than its oldest
+
+
+## [0.2.6] - 2026-07-27
+
 ### Changed
 
 - The session cache hit rate row moves up to sit directly below the burn rate rows, above session usage

@@ -1,0 +1,102 @@
+name: Model Drift Check
+
+# CCU's pricing tables are hand-maintained, and a model whose rates drift silently
+# produces confidently wrong cost figures rather than an error. This job runs the
+# built-in checker against upstream weekly so drift surfaces as an issue instead of
+# waiting for someone to notice their burn rate looks off.
+
+on:
+  schedule:
+    - cron: '0 19 * * 1' # Mondays, 05:00 AEST / 06:00 AEDT
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-models:
+    name: Check model tables against upstream
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+
+      - name: Extract Go version from go.mod
+        id: go-version
+        run: echo "version=$(grep '^go ' go.mod | awk '{print $2}')" >> $GITHUB_OUTPUT
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.go-version.outputs.version }}
+          check-latest: true
+
+      # Exit codes: 0 clean, 1 drift found, 2 upstream fetch failed. Only 1 should
+      # open an issue - a fetch failure is a transient upstream problem, not drift.
+      - name: Run model check
+        id: check
+        run: |
+          set +e
+          go run ./cmd/ccu -check-models > model-check.txt 2>&1
+          status=$?
+          set -e
+          cat model-check.txt
+          {
+            echo "status=$status"
+            echo "report<<CCU_EOF"
+            cat model-check.txt
+            echo "CCU_EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$status" -eq 2 ]; then
+            echo "::warning::Could not fetch upstream pricing dataset; skipping drift check"
+          fi
+          exit 0
+
+      - name: Open drift issue
+        if: steps.check.outputs.status == '1'
+        uses: actions/github-script@v8
+        env:
+          REPORT: ${{ steps.check.outputs.report }}
+        with:
+          script: |
+            const title = 'Model pricing tables have drifted from upstream';
+            const body = [
+              'The scheduled `ccu -check-models` run found differences between',
+              "CCU's model tables and the upstream rates dataset.",
+              '',
+              '```',
+              process.env.REPORT.trim(),
+              '```',
+              '',
+              `[Workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+            ].join('\n');
+
+            // Reuse the open issue if there is one, so a persistent drift does not
+            // create a new issue every week.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'model-drift',
+            });
+
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body,
+              });
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['model-drift'],
+            });

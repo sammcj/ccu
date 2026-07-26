@@ -190,14 +190,19 @@ func addFinding(report *Report, seen map[string]bool, model, kind, issue string)
 }
 
 const agentHint = `
-Agent hint - to update ccu's model support, change these in order:
-  1. internal/models/entry.go      NormaliseModelName(): map the new model ID to a canonical key
-  2. internal/pricing/pricing.go   ModelPricing: add or correct the canonical key (USD per 1M
+Agent hint - a new version of an existing family (e.g. opus 6) needs NO normalisation
+change: NormaliseModelName() parses versions generically. Only pricing needs updating.
+  1. internal/pricing/pricing.go   ModelPricing: add or correct the canonical key (USD per 1M
                                    tokens; cache write is typically 1.25x input and cache read
-                                   0.1x input unless upstream says otherwise)
-  3. internal/ui/dashboard.go      FormatModelNameSimple(): add the model family to the families
-                                   list if it is not opus/sonnet/haiku/fable/mythos
-  4. Add matching test cases in internal/models/entry_test.go, internal/pricing/pricing_test.go
+                                   0.1x input unless upstream says otherwise). If the whole
+                                   family repriced, update FamilyPricing too - that is the
+                                   fallback for versions with no explicit entry.
+  2. A brand new FAMILY (not just a version) additionally needs:
+     - internal/models/entry.go    ModelFamilies + latestFamilyVersion
+     - internal/pricing/pricing.go FamilyPricing
+     - internal/ui/styles.go       GetModelColour() + a ColorX constant
+     FormatModelNameSimple() reads ModelFamilies, so it needs no separate edit.
+  3. Add matching test cases in internal/models/entry_test.go, internal/pricing/pricing_test.go
      and internal/ui/dashboard_test.go
 Verify with: make test && ./ccu -check-models
 `

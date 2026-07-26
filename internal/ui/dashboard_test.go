@@ -55,6 +55,48 @@ func TestFormatModelNameSimple(t *testing.T) {
 	}
 }
 
+// TestRenderEstimatedPricingNotice checks the notice appears only when a session
+// used a model CCU cannot price exactly. A cost derived from a fallback rate has
+// to be labelled as an estimate - the alternative is presenting a guessed number
+// with the same confidence as a measured one.
+func TestRenderEstimatedPricingNotice(t *testing.T) {
+	sessionUsing := func(modelNames ...string) models.SessionBlock {
+		stats := make(map[string]*models.ModelStats, len(modelNames))
+		for _, name := range modelNames {
+			stats[name] = &models.ModelStats{InputTokens: 100, OutputTokens: 50}
+		}
+		return models.SessionBlock{PerModelStats: stats}
+	}
+
+	t.Run("silent when every model is priced", func(t *testing.T) {
+		notice := renderEstimatedPricingNotice([]models.SessionBlock{
+			sessionUsing("claude-opus-5", "claude-sonnet-4-6"),
+		})
+		assert.Empty(t, notice, "no notice when every rate is published")
+	})
+
+	t.Run("names the unpriced model", func(t *testing.T) {
+		notice := renderEstimatedPricingNotice([]models.SessionBlock{
+			sessionUsing("claude-opus-5", "claude-opus-6"),
+		})
+		assert.Contains(t, notice, "claude-opus-6")
+		assert.NotContains(t, notice, "claude-opus-5", "priced models must not be listed")
+	})
+
+	t.Run("deduplicates across sessions", func(t *testing.T) {
+		notice := renderEstimatedPricingNotice([]models.SessionBlock{
+			sessionUsing("claude-opus-6"),
+			sessionUsing("claude-opus-6"),
+		})
+		assert.Equal(t, 1, strings.Count(notice, "claude-opus-6"))
+	})
+
+	t.Run("handles sessions with no model stats", func(t *testing.T) {
+		assert.Empty(t, renderEstimatedPricingNotice(nil))
+		assert.Empty(t, renderEstimatedPricingNotice([]models.SessionBlock{{}}))
+	})
+}
+
 // TestResetTimeCalculation tests that reset times in the past are correctly adjusted
 func TestResetTimeCalculation(t *testing.T) {
 	tests := []struct {

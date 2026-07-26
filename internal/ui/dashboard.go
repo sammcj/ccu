@@ -10,6 +10,7 @@ import (
 	"github.com/sammcj/ccu/internal/analysis"
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/oauth"
+	"github.com/sammcj/ccu/internal/pricing"
 )
 
 // Column positions (1-based) for ANSI cursor positioning
@@ -142,7 +143,33 @@ func RenderDashboard(data DashboardData) string {
 		}
 	}
 
+	if notice := renderEstimatedPricingNotice(data.AllSessions); notice != "" {
+		output = append(output, notice)
+	}
+
 	return strings.Join(output, "\n")
+}
+
+// renderEstimatedPricingNotice warns when a session used a model CCU has no
+// published rate for. Those costs come from the family fallback (or the Sonnet
+// fallback for non-Claude models), so any total including them is a guess rather
+// than a measurement, and the UI should say which model made it one.
+func renderEstimatedPricingNotice(sessions []models.SessionBlock) string {
+	var used []string
+	for _, session := range sessions {
+		for model := range session.PerModelStats {
+			used = append(used, model)
+		}
+	}
+
+	estimated := pricing.EstimatedModels(used)
+	if len(estimated) == 0 {
+		return ""
+	}
+
+	return WarningStyle.Render(fmt.Sprintf(
+		"⚠️  No published pricing for %s - costs shown are estimates.",
+		strings.Join(estimated, ", ")))
 }
 
 // getSessionDistributionString returns just the distribution part without the label
@@ -295,9 +322,9 @@ func FormatModelNameSimple(model string) string {
 		}
 	}
 
-	// Find model family and extract version
-	families := []string{"fable", "mythos", "opus", "sonnet", "haiku"}
-	for _, family := range families {
+	// Find model family and extract version. Sourced from models.ModelFamilies so
+	// a new family is named in one place rather than two.
+	for _, family := range models.ModelFamilies {
 		if strings.Contains(name, family) {
 			_, after, _ := strings.Cut(name, family)
 			afterFamily := strings.TrimPrefix(after, "-")

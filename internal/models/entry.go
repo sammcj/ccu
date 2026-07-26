@@ -1,6 +1,8 @@
 package models
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -36,63 +38,79 @@ func (e *UsageEntry) Hash() string {
 	return e.MessageID + ":" + e.RequestID
 }
 
-// NormaliseModelName standardises model names for consistent grouping
+// ModelFamilies lists every Claude family CCU understands, newest tier first.
+// Adding a family here is the only change needed for CCU to name and group a new
+// one - versions within a family are parsed generically by NormaliseModelName.
+var ModelFamilies = []string{"fable", "mythos", "opus", "sonnet", "haiku"}
+
+// latestFamilyVersion maps a family to its newest released version, used when a
+// model string names a family with no version at all (Claude Code writes bare
+// "opus" / "sonnet" / "fable" into some JSONL entries). Guessing the newest is
+// the least-wrong option: an unversioned name always means "whatever the plan
+// currently serves", never an older generation.
+var latestFamilyVersion = map[string]string{
+	"fable":  "5",
+	"mythos": "5",
+	"opus":   "5",
+	"sonnet": "5",
+	"haiku":  "4-5",
+}
+
+// familyVersionPattern captures the family and its version from a modern model
+// ID, e.g. "claude-opus-4-8-20260101" → ("opus", "4-8"). Version components are
+// capped at two digits and must end on a non-digit, which is what keeps a
+// trailing date stamp out of the key: in "claude-opus-4-20250514" the parser
+// cannot take "-20" as a minor version because a digit follows it, so the
+// version is "4". Suffixes that are not digits at all ("[1m]") stop it anyway.
+var familyVersionPattern = regexp.MustCompile(
+	`(` + strings.Join(ModelFamilies, "|") + `)[-.]?(\d{1,2}(?:[-.]\d{1,2})?)(?:[^0-9]|$)`)
+
+// versionFamilyPattern captures the same pair from the other ID shape Anthropic
+// publishes, where the version precedes the family:
+// "claude-3-5-sonnet-20241022" → ("sonnet", "3-5"). Both grammars are live -
+// "claude-4-opus-20250514" is in the current upstream rates dataset - so treating
+// this one as a Claude 3 relic mixes up two generations of Opus pricing.
+var versionFamilyPattern = regexp.MustCompile(
+	`claude[-.](\d{1,2}(?:[-.]\d{1,2})?)[-.](` + strings.Join(ModelFamilies, "|") + `)`)
+
+// canonicalName renders a parsed (family, version) pair as CCU's lookup key.
+// Anthropic moved the version after the family at Claude 4 and the pricing tables
+// follow suit, so the two eras key differently: "claude-3-5-sonnet" but
+// "claude-sonnet-4-5". The version decides the shape, never the ID it came from.
+func canonicalName(family, version string) string {
+	version = strings.ReplaceAll(version, ".", "-")
+	major, _ := strconv.Atoi(strings.SplitN(version, "-", 2)[0])
+	if major < 4 {
+		return "claude-" + version + "-" + family
+	}
+	return "claude-" + family + "-" + version
+}
+
+// NormaliseModelName standardises model names for consistent grouping.
+//
+// Versions are parsed rather than enumerated, so a model released after this
+// code was written still normalises to its own key: "claude-opus-5" becomes
+// "claude-opus-5", not the family's oldest generation. Getting this wrong is
+// expensive - the normalised name is the pricing table's lookup key, so a
+// mis-normalised model is silently billed at another model's rate.
 func NormaliseModelName(model string) string {
-	// Convert to lowercase for case-insensitive matching
 	modelLower := strings.ToLower(model)
 
-	// Map various model names to standard names
-	// Check for version-specific patterns first (newest → oldest)
-	switch {
-	case strings.Contains(modelLower, "fable"):
-		return "claude-fable-5"
-	case strings.Contains(modelLower, "mythos"):
-		return "claude-mythos-5"
-	case strings.Contains(modelLower, "opus"):
-		if strings.Contains(modelLower, "4-8") || strings.Contains(modelLower, "4.8") {
-			return "claude-opus-4-8"
-		}
-		if strings.Contains(modelLower, "4-7") || strings.Contains(modelLower, "4.7") {
-			return "claude-opus-4-7"
-		}
-		if strings.Contains(modelLower, "4-6") || strings.Contains(modelLower, "4.6") {
-			return "claude-opus-4-6"
-		}
-		if strings.Contains(modelLower, "4-5") || strings.Contains(modelLower, "4.5") {
-			return "claude-opus-4-5"
-		}
-		if strings.Contains(modelLower, "4-1") || strings.Contains(modelLower, "4.1") {
-			return "claude-opus-4-1"
-		}
-		if strings.Contains(modelLower, "3") {
-			return "claude-3-opus"
-		}
-		return "claude-opus-4"
-	case strings.Contains(modelLower, "sonnet"):
-		if strings.Contains(modelLower, "4-6") || strings.Contains(modelLower, "4.6") {
-			return "claude-sonnet-4-6"
-		}
-		if strings.Contains(modelLower, "4-5") || strings.Contains(modelLower, "4.5") {
-			return "claude-sonnet-4-5"
-		}
-		if strings.Contains(modelLower, "3-5") || strings.Contains(modelLower, "3.5") {
-			return "claude-3-5-sonnet"
-		}
-		if strings.Contains(modelLower, "4") {
-			return "claude-sonnet-4"
-		}
-		return "claude-3-sonnet"
-	case strings.Contains(modelLower, "haiku"):
-		if strings.Contains(modelLower, "4-5") || strings.Contains(modelLower, "4.5") {
-			return "claude-haiku-4-5"
-		}
-		if strings.Contains(modelLower, "3-5") || strings.Contains(modelLower, "3.5") {
-			return "claude-3-5-haiku"
-		}
-		return "claude-3-haiku"
-	default:
-		return model
+	if m := familyVersionPattern.FindStringSubmatch(modelLower); m != nil {
+		return canonicalName(m[1], m[2])
 	}
+	if m := versionFamilyPattern.FindStringSubmatch(modelLower); m != nil {
+		return canonicalName(m[2], m[1])
+	}
+
+	// A family name with no version at all - resolve to the newest release.
+	for _, family := range ModelFamilies {
+		if strings.Contains(modelLower, family) {
+			return "claude-" + family + "-" + latestFamilyVersion[family]
+		}
+	}
+
+	return model
 }
 
 // ModelStats tracks per-model statistics
