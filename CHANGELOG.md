@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Opus model names render in a deeper orchid instead of the previous pale pink
+
+
+## [0.2.11] - 2026-07-27
+
 ### Fixed
 
 - Opus 5 was detected as Opus 4 and costed at $15/$75 per million tokens instead of $5/$25, overstating every Opus 5 cost by 3x and skewing burn rate and depletion predictions. Sonnet 5 and Haiku 5 were similarly mapped to older generations. Model normalisation now parses the version out of the model ID instead of matching against a list of known versions, so a model released after this code was written normalises to its own name rather than to its family's oldest generation

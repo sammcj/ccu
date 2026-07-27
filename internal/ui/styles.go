@@ -28,11 +28,12 @@ var (
 
 // Model Name Colours
 // Used for colour-coding model names in session distribution and per-model weekly bars.
-// Opus already occupies the pale end of the pink range, so Fable takes a saturated
-// hot pink to stay distinguishable from it at a glance.
+// The pink-to-red end of this palette is crowded - Opus, Fable, Mythos and the
+// danger/warning colours all live there - so Opus sits at the orchid end of pink
+// to keep its distance from Fable's hot pink, which it renders next to.
 var (
 	ColorSonnet = lipgloss.Color("#0088FF") // Blue - Used for: "Sonnet 4.5", "Sonnet 4", "Sonnet 3.5" model names
-	ColorOpus   = lipgloss.Color("#FFB3D9") // Mellow pink - Used for: "Opus 4.5", "Opus 4", "Opus 3" model names
+	ColorOpus   = lipgloss.Color("#C87EBE") // Orchid - Used for: "Opus 5", "Opus 4.5", "Opus 4", "Opus 3" model names
 	ColorHaiku  = lipgloss.Color("#9B72CF") // Violet - Used for: "Haiku 4.5", "Haiku 3.5", "Haiku 3" model names
 	ColorFable  = lipgloss.Color("#FF4FA3") // Hot pink - Used for: "Fable" model names
 	ColorMythos = lipgloss.Color("#E5484D") // Red - Used for: "Mythos" model names
