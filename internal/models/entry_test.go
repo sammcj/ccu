@@ -96,7 +96,8 @@ func TestNormaliseModelName(t *testing.T) {
 		{"opus", "claude-opus-5"},
 		{"sonnet", "claude-sonnet-5"},
 		{"haiku", "claude-haiku-4-5"},
-		{"fable", "claude-fable-5"},
+		{"fable", "claude-fable-5-1"},
+		{"mythos", "claude-mythos-5-1"},
 
 		// Unknown passthrough
 		{"gpt-4", "gpt-4"},

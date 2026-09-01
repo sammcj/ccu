@@ -75,12 +75,36 @@ func TestRenderEstimatedPricingNotice(t *testing.T) {
 		assert.Empty(t, notice, "no notice when every rate is published")
 	})
 
-	t.Run("names the unpriced model", func(t *testing.T) {
+	t.Run("silent for fable 5.1", func(t *testing.T) {
+		notice := renderEstimatedPricingNotice([]models.SessionBlock{
+			sessionUsing("claude-fable-5-1"),
+		})
+		assert.Empty(t, notice, "fable 5.1 has a published rate")
+	})
+
+	t.Run("names the unpriced model and the family rate that stood in", func(t *testing.T) {
 		notice := renderEstimatedPricingNotice([]models.SessionBlock{
 			sessionUsing("claude-opus-5", "claude-opus-6"),
 		})
 		assert.Contains(t, notice, "claude-opus-6")
+		assert.Contains(t, notice, "using current Opus family rates")
 		assert.NotContains(t, notice, "claude-opus-5", "priced models must not be listed")
+	})
+
+	t.Run("future fable versions use fable family rates", func(t *testing.T) {
+		notice := renderEstimatedPricingNotice([]models.SessionBlock{
+			sessionUsing("claude-fable-5-2", "claude-fable-6"),
+		})
+		assert.Contains(t, notice, "claude-fable-5-2 - using current Fable family rates")
+		assert.Contains(t, notice, "claude-fable-6 - using current Fable family rates")
+	})
+
+	t.Run("unrecognised model is flagged as an estimate", func(t *testing.T) {
+		notice := renderEstimatedPricingNotice([]models.SessionBlock{
+			sessionUsing("gpt-4"),
+		})
+		assert.Contains(t, notice, "gpt-4 - its costs are estimates")
+		assert.NotContains(t, notice, "family rates")
 	})
 
 	t.Run("deduplicates across sessions", func(t *testing.T) {

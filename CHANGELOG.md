@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Pricing for Fable 5.1 and Mythos 5.1. Fable 5.1 cache reads are $0.25 per million tokens, down from $1.00 on Fable 5
+
+### Changed
+
+- An unversioned `fable` or `mythos` model name now resolves to 5.1
+- The unpublished-pricing notice now says which family rate stood in for a model CCU has no exact rate for (a future Fable 5.2 or Fable 6 is costed at current Fable rates and the notice says so). Only an unrecognised, non-Claude model is still labelled an outright estimate
+
+## [0.2.11] - 2026-09-02
+
 ### Changed
 
 - Opus model names render in a deeper orchid instead of the previous pale pink

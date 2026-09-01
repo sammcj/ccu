@@ -151,9 +151,10 @@ func RenderDashboard(data DashboardData) string {
 }
 
 // renderEstimatedPricingNotice warns when a session used a model CCU has no
-// published rate for. Those costs come from the family fallback (or the Sonnet
-// fallback for non-Claude models), so any total including them is a guess rather
-// than a measurement, and the UI should say which model made it one.
+// published rate for. A version of a known family (a Fable newer than the
+// pricing table) is costed at that family's standing rate, so the notice names
+// the rate that stood in. An unrecognised model gets the Sonnet fallback, which
+// is a guess, and the notice says so.
 func renderEstimatedPricingNotice(sessions []models.SessionBlock) string {
 	var used []string
 	for _, session := range sessions {
@@ -162,14 +163,26 @@ func renderEstimatedPricingNotice(sessions []models.SessionBlock) string {
 		}
 	}
 
-	estimated := pricing.EstimatedModels(used)
-	if len(estimated) == 0 {
+	var lines []string
+	for _, e := range pricing.EstimatedModels(used) {
+		if e.Family == "" {
+			lines = append(lines, fmt.Sprintf(
+				"⚠️  No published pricing for %s - its costs are estimates.", e.Model))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf(
+			"⚠️  No published pricing for %s - using current %s family rates.",
+			e.Model, familyLabel(e.Family)))
+	}
+	if len(lines) == 0 {
 		return ""
 	}
+	return WarningStyle.Render(strings.Join(lines, "\n"))
+}
 
-	return WarningStyle.Render(fmt.Sprintf(
-		"⚠️  No published pricing for %s - costs shown are estimates.",
-		strings.Join(estimated, ", ")))
+// familyLabel renders a models.ModelFamilies entry for display ("opus" → "Opus").
+func familyLabel(family string) string {
+	return strings.ToUpper(family[:1]) + family[1:]
 }
 
 // getSessionDistributionString returns just the distribution part without the label
@@ -332,7 +345,7 @@ func FormatModelNameSimple(model string) string {
 			// Convert version dashes to dots (e.g., "4-5" -> "4.5")
 			version := strings.ReplaceAll(afterFamily, "-", ".")
 
-			familyName := strings.ToUpper(family[:1]) + family[1:]
+			familyName := familyLabel(family)
 			if version != "" {
 				return familyName + " " + version
 			}

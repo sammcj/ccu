@@ -193,52 +193,78 @@ func TestCalculateCostForTokens(t *testing.T) {
 // The second return distinguishes a measured rate from an estimated one.
 func TestLookupFallbackLadder(t *testing.T) {
 	tests := []struct {
-		name      string
-		model     string
-		want      Pricing
-		wantExact bool
+		name       string
+		model      string
+		want       Pricing
+		wantSource Source
 	}{
 		{
-			name:      "known model uses its own entry",
-			model:     "claude-opus-5",
-			want:      ModelPricing["claude-opus-5"],
-			wantExact: true,
+			name:       "known model uses its own entry",
+			model:      "claude-opus-5",
+			want:       ModelPricing["claude-opus-5"],
+			wantSource: SourceExact,
+		},
+		{
+			name:       "fable 5.1 has its own entry with the cheaper cache read",
+			model:      "claude-fable-5-1",
+			want:       Pricing{Input: 10.00, Output: 50.00, CacheCreation: 12.50, CacheRead: 0.25},
+			wantSource: SourceExact,
+		},
+		{
+			name:       "mythos 5.1 has its own entry and keeps the upstream cache read rate",
+			model:      "claude-mythos-5-1",
+			want:       Pricing{Input: 10.00, Output: 50.00, CacheCreation: 12.50, CacheRead: 1.00},
+			wantSource: SourceExact,
 		},
 		{
 			// An unreleased Opus version must cost Opus rates, not Sonnet rates.
-			name:      "unreleased opus version falls back to the opus family rate",
-			model:     "claude-opus-6",
-			want:      FamilyPricing["opus"],
-			wantExact: false,
+			name:       "unreleased opus version falls back to the opus family rate",
+			model:      "claude-opus-6",
+			want:       FamilyPricing["opus"],
+			wantSource: SourceFamily,
 		},
 		{
-			name:      "unreleased haiku version falls back to the haiku family rate",
-			model:     "claude-haiku-6",
-			want:      FamilyPricing["haiku"],
-			wantExact: false,
+			name:       "unreleased haiku version falls back to the haiku family rate",
+			model:      "claude-haiku-6",
+			want:       FamilyPricing["haiku"],
+			wantSource: SourceFamily,
 		},
 		{
-			name:      "legacy claude 3 name still resolves to its own entry",
-			model:     "claude-3-opus-20240229",
-			want:      ModelPricing["claude-3-opus"],
-			wantExact: true,
+			// These IDs do not exist. They stand in for whatever ships next and
+			// must cost Fable rates without any code change.
+			name:       "unreleased fable point release falls back to the fable family rate",
+			model:      "claude-fable-5-2-20270101",
+			want:       FamilyPricing["fable"],
+			wantSource: SourceFamily,
 		},
 		{
-			name:      "non-claude model falls back to sonnet",
-			model:     "gemma-4-26b-a4b-it-5bit",
-			want:      ModelPricing[fallbackModel],
-			wantExact: false,
+			name:       "unreleased fable major release falls back to the fable family rate",
+			model:      "claude-fable-6",
+			want:       FamilyPricing["fable"],
+			wantSource: SourceFamily,
+		},
+		{
+			name:       "legacy claude 3 name still resolves to its own entry",
+			model:      "claude-3-opus-20240229",
+			want:       ModelPricing["claude-3-opus"],
+			wantSource: SourceExact,
+		},
+		{
+			name:       "non-claude model falls back to sonnet",
+			model:      "gemma-4-26b-a4b-it-5bit",
+			want:       ModelPricing[fallbackModel],
+			wantSource: SourceFallback,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, exact := Lookup(tt.model)
+			got, source := Lookup(tt.model)
 			if got != tt.want {
 				t.Errorf("Lookup(%q) = %+v, want %+v", tt.model, got, tt.want)
 			}
-			if exact != tt.wantExact {
-				t.Errorf("Lookup(%q) exact = %v, want %v", tt.model, exact, tt.wantExact)
+			if source != tt.wantSource {
+				t.Errorf("Lookup(%q) source = %v, want %v", tt.model, source, tt.wantSource)
 			}
 		})
 	}
@@ -255,6 +281,25 @@ func TestEveryFamilyHasFallbackPricing(t *testing.T) {
 	}
 }
 
+// TestFamilyPricingMatchesLatestRelease catches FamilyPricing drifting from the
+// newest version's entry when a release reprices a family. The UI tells the user
+// a future version is costed at the family's current rate, so it must be. A bare
+// family name normalises to its latest release, which keeps latestFamilyVersion
+// private. Sonnet is skipped: its 5 entry is a promotional rate the family
+// deliberately does not inherit.
+func TestFamilyPricingMatchesLatestRelease(t *testing.T) {
+	for _, family := range models.ModelFamilies {
+		if family == "sonnet" {
+			continue
+		}
+		latest := models.NormaliseModelName(family)
+		if FamilyPricing[family] != ModelPricing[latest] {
+			t.Errorf("FamilyPricing[%q] = %+v, but latest release %s is %+v",
+				family, FamilyPricing[family], latest, ModelPricing[latest])
+		}
+	}
+}
+
 // TestEstimatedModels checks the UI notice only names models CCU cannot price
 // exactly, deduplicated and sorted.
 func TestEstimatedModels(t *testing.T) {
@@ -266,13 +311,17 @@ func TestEstimatedModels(t *testing.T) {
 		"claude-haiku-6", // family fallback
 	})
 
-	want := []string{"claude-haiku-6", "claude-opus-6", "gpt-4"}
+	want := []Estimate{
+		{Model: "claude-haiku-6", Family: "haiku"},
+		{Model: "claude-opus-6", Family: "opus"},
+		{Model: "gpt-4"},
+	}
 	if len(got) != len(want) {
 		t.Fatalf("EstimatedModels() = %v, want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("EstimatedModels()[%d] = %q, want %q", i, got[i], want[i])
+			t.Errorf("EstimatedModels()[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}
 

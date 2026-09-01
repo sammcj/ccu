@@ -49,8 +49,8 @@ var ModelFamilies = []string{"fable", "mythos", "opus", "sonnet", "haiku"}
 // the least-wrong option: an unversioned name always means "whatever the plan
 // currently serves", never an older generation.
 var latestFamilyVersion = map[string]string{
-	"fable":  "5",
-	"mythos": "5",
+	"fable":  "5-1",
+	"mythos": "5-1",
 	"opus":   "5",
 	"sonnet": "5",
 	"haiku":  "4-5",
@@ -104,13 +104,23 @@ func NormaliseModelName(model string) string {
 	}
 
 	// A family name with no version at all - resolve to the newest release.
-	for _, family := range ModelFamilies {
-		if strings.Contains(modelLower, family) {
-			return "claude-" + family + "-" + latestFamilyVersion[family]
-		}
+	if family := FamilyOf(modelLower); family != "" {
+		return "claude-" + family + "-" + latestFamilyVersion[family]
 	}
 
 	return model
+}
+
+// FamilyOf returns the ModelFamilies entry a model name belongs to, or "" when
+// it matches none (non-Claude models, synthetic entries).
+func FamilyOf(model string) string {
+	modelLower := strings.ToLower(model)
+	for _, family := range ModelFamilies {
+		if strings.Contains(modelLower, family) {
+			return family
+		}
+	}
+	return ""
 }
 
 // ModelStats tracks per-model statistics
