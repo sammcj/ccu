@@ -294,6 +294,7 @@ func (m AppModel) View() string {
 			AllSessions:            m.sessions,
 			OAuthData:              m.oauthData,
 			OAuthUnavailableReason: m.getOAuthUnavailableReason(),
+			Width:                  m.width,
 		}
 		content = ui.RenderDashboard(data)
 	}

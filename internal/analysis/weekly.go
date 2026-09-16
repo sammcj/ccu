@@ -16,18 +16,35 @@ type WeeklyPrediction struct {
 
 // PredictWeeklyDepletion predicts when the "All Models" weekly limit will be hit
 // based on the actual weekly consumption rate (not the momentary session burn rate).
+func PredictWeeklyDepletion(oauthData *oauth.UsageData, now time.Time) WeeklyPrediction {
+	return predictWeeklyDepletion(oauthData.SevenDay.Utilisation, oauthData.SevenDay.ResetsAt, now)
+}
+
+// PredictModelWeeklyDepletion predicts when a per-model weekly limit (e.g. Fable)
+// will be hit. Each scoped limit carries its own reset time, which can differ
+// from the All Models window, so the prediction is anchored to the limit's own
+// window rather than SevenDay.ResetsAt.
+func PredictModelWeeklyDepletion(limit oauth.Limit, now time.Time) WeeklyPrediction {
+	if limit.ResetsAt == nil {
+		return WeeklyPrediction{Utilisation: limit.Percent}
+	}
+	return predictWeeklyDepletion(limit.Percent, *limit.ResetsAt, now)
+}
+
+// predictWeeklyDepletion extrapolates a weekly limit's depletion time from its
+// utilisation and reset time.
 //
 // The calculation uses the real average burn rate over the weekly window:
 // - Weekly window starts 7 days before reset time
 // - Burn rate = utilisation% / hours elapsed since window start
 // - This reflects actual usage patterns, not momentary session intensity
-func PredictWeeklyDepletion(oauthData *oauth.UsageData, now time.Time) WeeklyPrediction {
+func predictWeeklyDepletion(utilisation float64, resetsAt string, now time.Time) WeeklyPrediction {
 	prediction := WeeklyPrediction{
-		Utilisation: oauthData.SevenDay.Utilisation,
+		Utilisation: utilisation,
 	}
 
 	// Parse reset time
-	resetTime, err := oauth.ParseResetTime(oauthData.SevenDay.ResetsAt)
+	resetTime, err := oauth.ParseResetTime(resetsAt)
 	if err != nil {
 		return prediction
 	}

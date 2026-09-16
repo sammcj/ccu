@@ -145,11 +145,47 @@ func TestBuildWeeklySection_ScopedLimits(t *testing.T) {
 	require.NotNil(t, fable.ResetsInSeconds)
 	assert.Greater(t, *fable.ResetsInSeconds, int64(0))
 
+	// 45% in 3 days = 15%/day, 55% left = ~3.67 days, just before the 4-day reset
+	require.NotNil(t, fable.LimitAt)
+	require.NotNil(t, fable.LimitInSeconds)
+	assert.InDelta(t, 3.67*24*3600, float64(*fable.LimitInSeconds), 3600)
+	assert.Less(t, *fable.LimitInSeconds, *fable.ResetsInSeconds)
+	assert.True(t, fable.WillHitLimit)
+
 	// Sonnet does, so hours are derived from the plan table
 	sonnet := w.Scoped["sonnet"]
 	require.NotNil(t, sonnet)
 	assert.Equal(t, float64(210), sonnet.LimitHours)
 	assert.InDelta(t, 210*0.25, sonnet.UsedHours, 0.1)
+}
+
+// A per-model limit burning faster than its window reports a depletion before
+// its own reset, even when the All Models bucket is healthy.
+func TestBuildWeeklySection_ScopedLimitWillHitBeforeReset(t *testing.T) {
+	now := baseTime
+	resetsAt := now.Add(2 * 24 * time.Hour).Format(time.RFC3339Nano) // 5 days elapsed
+
+	oauthData := newTestOAuthData(now)
+	oauthData.SevenDaySonnet = nil
+	oauthData.Limits = []oauth.Limit{
+		{Kind: oauth.KindWeeklyAll, Percent: 20, IsActive: true},
+		{
+			Kind:     oauth.KindWeeklyScoped,
+			Percent:  90,
+			ResetsAt: &resetsAt,
+			Scope:    &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Fable"}},
+		},
+	}
+
+	w := buildWeeklySection(oauthData, newTestConfig(), now)
+
+	fable := w.Scoped["fable"]
+	require.NotNil(t, fable)
+	require.NotNil(t, fable.LimitAt)
+	require.NotNil(t, fable.LimitInSeconds)
+	// 90% over 5 days = 18%/day, 10% left = ~13.3h
+	assert.InDelta(t, 13.3*3600, float64(*fable.LimitInSeconds), 600)
+	assert.True(t, fable.WillHitLimit)
 }
 
 // Two limits for the same model on different surfaces must not collapse into

@@ -96,6 +96,14 @@ func buildWeeklySection(oauthData *oauth.UsageData, cfg *models.Config, now time
 			}
 		}
 
+		pred := analysis.PredictModelWeeklyDepletion(limit, now)
+		if !pred.DepletionTime.IsZero() {
+			secs := int64(math.Max(0, pred.DepletionTime.Sub(now).Seconds()))
+			section.LimitAt = &pred.DepletionTime
+			section.LimitInSeconds = &secs
+		}
+		section.WillHitLimit = pred.WillHitLimit
+
 		if w.Scoped == nil {
 			w.Scoped = make(map[string]*WeeklyModelSection)
 		}

@@ -6,6 +6,17 @@
 
 ### Added
 
+- Per-model weekly limits (Fable and any other `weekly_scoped` limit) now get a depletion prediction on the same terms as the All Models weekly limit. The prediction line shows `Weekly Fable limit: <time>` when the model's cap will be hit before its own reset, and the API's `weekly.scoped[*]` entries gain `limit_at`, `limit_in_seconds` and `will_hit_limit`
+
+### Fixed
+
+- Dashboard rows are clipped to the terminal width. A session spanning three or more models made the `Session - Usage` distribution wrap, which shifted every row below it and left the previous frame's rows on screen as duplicates
+- `make install` removes the old binary before copying so macOS doesn't SIGKILL the first launch on a cached-signature mismatch
+
+## [0.2.13] - 2026-09-16
+
+### Added
+
 - Pricing for Fable 5.1 and Mythos 5.1. Fable 5.1 cache reads are $0.25 per million tokens, down from $1.00 on Fable 5
 
 ### Changed

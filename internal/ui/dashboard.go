@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/sammcj/ccu/internal/analysis"
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/oauth"
@@ -71,6 +72,7 @@ type DashboardData struct {
 	AllSessions            []models.SessionBlock
 	OAuthData              *oauth.UsageData // Optional OAuth-fetched data
 	OAuthUnavailableReason string           // Reason OAuth is unavailable (for fallback display)
+	Width                  int              // Terminal width in columns; 0 disables line clipping
 }
 
 // RenderDashboard renders the realtime dashboard in a single-column layout
@@ -147,7 +149,36 @@ func RenderDashboard(data DashboardData) string {
 		output = append(output, notice)
 	}
 
+	for i, line := range output {
+		output[i] = clipRow(line, data.Width)
+	}
 	return strings.Join(output, "\n")
+}
+
+// suffixJump is the cursor move formatRow emits before the suffix column.
+var suffixJump = fmt.Sprintf("\x1b[%dG", colPosSuffix)
+
+// clipRow keeps a rendered line within the terminal width. A line that wraps
+// pushes every row below it down one, and the line-based repaint then leaves
+// the previous frame's rows on screen as ghosts.
+//
+// formatRow lines position their columns with absolute cursor jumps, so their
+// printable width understates their on-screen width. The suffix is the only
+// column of unbounded length (model distribution, reset times), and it starts
+// at a known column, so it is clipped to the room left after that column.
+// Other lines are clipped by printable width. Width 0 means unknown: no clip.
+func clipRow(line string, width int) string {
+	if width <= 0 {
+		return line
+	}
+	if head, suffix, ok := strings.Cut(line, suffixJump); ok {
+		room := width - colPosSuffix + 1
+		if room <= 0 {
+			return head
+		}
+		return head + suffixJump + ansi.Truncate(suffix, room, "…")
+	}
+	return ansi.Truncate(line, width, "…")
 }
 
 // renderEstimatedPricingNotice warns when a session used a model CCU has no
@@ -603,54 +634,16 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 			costStyle.Render(fmt.Sprintf("Session limit: %s", costDepletionStr)))
 	}
 
-	// Build weekly prediction part - only show if there's a problem (not OK)
+	// Build weekly prediction parts - only show if there's a problem (not OK).
+	// All Models first, then any per-model weekly limit (e.g. Fable) on the same
+	// terms, so a model cap about to bind surfaces here even when the account-wide
+	// weekly bucket looks healthy.
 	var weeklyPart string
 	if showWeekly {
-		weeklyPrediction := analysis.PredictWeeklyDepletion(oauthData, now)
-		if !weeklyPrediction.ResetTime.IsZero() {
-			var weeklyStr string
-			var weeklyStyle lipgloss.Style
-			showWeeklyPart := false // Only show if there's an issue
-
-			if weeklyPrediction.Utilisation >= 100 {
-				weeklyStr = "Weekly limit exceeded!"
-				weeklyStyle = lipgloss.NewStyle().Foreground(ColorDanger)
-				showWeeklyPart = true
-			} else if !weeklyPrediction.DepletionTime.IsZero() {
-				depLocal := weeklyPrediction.DepletionTime.Local()
-				depDay := depLocal.Day()
-				weeklyDepletionStr := fmt.Sprintf("%s %d%s %s",
-					depLocal.Format("Mon"), depDay, dayOrdinalSuffix(depDay),
-					depLocal.Format("3:04 PM"))
-
-				if weeklyPrediction.WillHitLimit {
-					// Will hit limit before weekly reset
-					timeUntil := weeklyPrediction.DepletionTime.Sub(now)
-					switch {
-					case timeUntil <= 6*time.Hour:
-						weeklyStyle = lipgloss.NewStyle().Foreground(ColorDanger) // Red
-					case timeUntil <= 12*time.Hour:
-						weeklyStyle = lipgloss.NewStyle().Foreground(ColorPrimary) // Orange
-					default:
-						weeklyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
-					}
-					weeklyStr = fmt.Sprintf("Weekly limit: %s", weeklyDepletionStr)
-					showWeeklyPart = true
-				} else {
-					// Depletion after weekly reset - show if within 1 day of reset
-					timeAfterReset := weeklyPrediction.DepletionTime.Sub(weeklyPrediction.ResetTime)
-					if timeAfterReset <= 24*time.Hour {
-						weeklyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
-						weeklyStr = fmt.Sprintf("Weekly limit: %s (after reset)", weeklyDepletionStr)
-						showWeeklyPart = true
-					}
-				}
-			}
-			// Skip showing "Weekly: OK" or "Insufficient data" - only show problems
-
-			if showWeeklyPart {
-				weeklyPart = " | [" + weeklyStyle.Render(weeklyStr) + "]"
-			}
+		weeklyPart = weeklyPredictionPart("Weekly", analysis.PredictWeeklyDepletion(oauthData, now), now)
+		for _, limit := range oauthData.WeeklyModelLimits() {
+			label := "Weekly " + limit.Label()
+			weeklyPart += weeklyPredictionPart(label, analysis.PredictModelWeeklyDepletion(limit, now), now)
 		}
 	}
 
@@ -687,6 +680,58 @@ func renderPredictionWithOAuth(oauthData *oauth.UsageData, session *models.Sessi
 	parts.WriteString(reminder)
 	parts.WriteString(updatedStr)
 	return parts.String()
+}
+
+// weeklyPredictionPart formats one weekly limit's prediction as a " | [...]"
+// segment for the prediction line. It returns "" when there is nothing to warn
+// about: no computable prediction, or depletion comfortably after the reset.
+// Labels read as "Weekly limit" and "Weekly Fable limit".
+func weeklyPredictionPart(label string, prediction analysis.WeeklyPrediction, now time.Time) string {
+	if prediction.ResetTime.IsZero() {
+		return ""
+	}
+
+	var text string
+	var style lipgloss.Style
+
+	switch {
+	case prediction.Utilisation >= 100:
+		text = label + " limit exceeded!"
+		style = lipgloss.NewStyle().Foreground(ColorDanger)
+
+	case prediction.DepletionTime.IsZero():
+		return ""
+
+	default:
+		depLocal := prediction.DepletionTime.Local()
+		depDay := depLocal.Day()
+		depletionStr := fmt.Sprintf("%s %d%s %s",
+			depLocal.Format("Mon"), depDay, dayOrdinalSuffix(depDay),
+			depLocal.Format("3:04 PM"))
+
+		if prediction.WillHitLimit {
+			// Will hit limit before weekly reset
+			timeUntil := prediction.DepletionTime.Sub(now)
+			switch {
+			case timeUntil <= 6*time.Hour:
+				style = lipgloss.NewStyle().Foreground(ColorDanger) // Red
+			case timeUntil <= 12*time.Hour:
+				style = lipgloss.NewStyle().Foreground(ColorPrimary) // Orange
+			default:
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
+			}
+			text = fmt.Sprintf("%s limit: %s", label, depletionStr)
+		} else {
+			// Depletion after weekly reset - show only if within 1 day of reset
+			if prediction.DepletionTime.Sub(prediction.ResetTime) > 24*time.Hour {
+				return ""
+			}
+			style = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
+			text = fmt.Sprintf("%s limit: %s (after reset)", label, depletionStr)
+		}
+	}
+
+	return " | [" + style.Render(text) + "]"
 }
 
 // renderCacheHitRateLine renders a cache hit rate row, styled to match other dashboard rows.

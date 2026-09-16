@@ -17,6 +17,9 @@ clean:
 
 install: build
 	mkdir -p "$${GOPATH:-$$HOME/go}/bin"
+	# rm first: cp over an existing Mach-O keeps the old vnode and macOS SIGKILLs
+	# the next launch on a cached-signature mismatch
+	rm -f "$${GOPATH:-$$HOME/go}/bin/ccu"
 	cp bin/ccu "$${GOPATH:-$$HOME/go}/bin/ccu"
 
 modernise:

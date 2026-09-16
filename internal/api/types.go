@@ -36,14 +36,20 @@ type WeeklyAllSection struct {
 // than the whole account.
 // ResetsInSeconds is a pointer so that a limit resetting right now serialises as
 // 0 rather than being dropped by omitempty.
+// LimitAt/LimitInSeconds are the predicted depletion time at the current weekly
+// burn rate, present whenever a prediction is computable (same rules as the
+// All Models prediction); WillHitLimit says whether that lands before ResetsAt.
 type WeeklyModelSection struct {
-	Model           string  `json:"model"`
-	Surface         string  `json:"surface,omitempty"`
-	UtilisationPct  float64 `json:"utilisation_pct"`
-	UsedHours       float64 `json:"used_hours,omitempty"`
-	LimitHours      float64 `json:"limit_hours,omitempty"`
-	ResetsAt        string  `json:"resets_at,omitempty"`
-	ResetsInSeconds *int64  `json:"resets_in_seconds,omitempty"`
+	Model           string     `json:"model"`
+	Surface         string     `json:"surface,omitempty"`
+	UtilisationPct  float64    `json:"utilisation_pct"`
+	UsedHours       float64    `json:"used_hours,omitempty"`
+	LimitHours      float64    `json:"limit_hours,omitempty"`
+	ResetsAt        string     `json:"resets_at,omitempty"`
+	ResetsInSeconds *int64     `json:"resets_in_seconds,omitempty"`
+	LimitAt         *time.Time `json:"limit_at,omitempty"`
+	LimitInSeconds  *int64     `json:"limit_in_seconds,omitempty"`
+	WillHitLimit    bool       `json:"will_hit_limit"`
 }
 
 // SessionSection holds current 5-hour session data

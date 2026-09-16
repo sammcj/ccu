@@ -61,3 +61,110 @@ func TestPredictWeeklyDepletion(t *testing.T) {
 		assert.Equal(t, now, result.DepletionTime)
 	})
 }
+
+func TestPredictModelWeeklyDepletion(t *testing.T) {
+	now := time.Date(2026, 2, 11, 21, 0, 0, 0, time.UTC)
+	resetTime := time.Date(2026, 2, 15, 12, 0, 0, 0, time.UTC) // 3.375 days elapsed
+	resetStr := resetTime.Format(time.RFC3339Nano)
+
+	fable := func(percent float64, resetsAt *string) oauth.Limit {
+		return oauth.Limit{
+			Kind:     oauth.KindWeeklyScoped,
+			Percent:  percent,
+			ResetsAt: resetsAt,
+			Scope:    &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Fable"}},
+		}
+	}
+
+	tests := []struct {
+		name         string
+		limit        oauth.Limit
+		now          time.Time
+		wantHit      bool
+		wantHasTime  bool
+		wantHasReset bool
+	}{
+		{
+			name:         "hits limit before reset",
+			limit:        fable(60, &resetStr),
+			now:          now,
+			wantHit:      true,
+			wantHasTime:  true,
+			wantHasReset: true,
+		},
+		{
+			name:         "safe until reset",
+			limit:        fable(20, &resetStr),
+			now:          now,
+			wantHit:      false,
+			wantHasTime:  true,
+			wantHasReset: true,
+		},
+		{
+			name:         "already exhausted",
+			limit:        fable(100, &resetStr),
+			now:          now,
+			wantHit:      true,
+			wantHasTime:  true,
+			wantHasReset: true,
+		},
+		{
+			name:         "no extrapolation under 24h of data",
+			limit:        fable(30, &resetStr),
+			now:          resetTime.Add(-7*24*time.Hour + 5*time.Hour),
+			wantHit:      false,
+			wantHasTime:  false,
+			wantHasReset: true,
+		},
+		{
+			name:         "no reset time gives no prediction",
+			limit:        fable(60, nil),
+			now:          now,
+			wantHit:      false,
+			wantHasTime:  false,
+			wantHasReset: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := PredictModelWeeklyDepletion(tt.limit, tt.now)
+			assert.Equal(t, tt.limit.Percent, result.Utilisation)
+			assert.Equal(t, tt.wantHit, result.WillHitLimit)
+			assert.Equal(t, tt.wantHasTime, !result.DepletionTime.IsZero())
+			assert.Equal(t, tt.wantHasReset, !result.ResetTime.IsZero())
+			if tt.wantHit && tt.wantHasTime {
+				assert.False(t, result.DepletionTime.After(resetTime))
+			}
+		})
+	}
+}
+
+// A scoped limit's window is anchored to its own reset time, not the All
+// Models window. The same percentage yields a different depletion time when
+// the two windows are offset.
+func TestPredictModelWeeklyDepletion_UsesOwnResetTime(t *testing.T) {
+	now := time.Date(2026, 2, 11, 21, 0, 0, 0, time.UTC)
+	allReset := time.Date(2026, 2, 15, 12, 0, 0, 0, time.UTC)
+	fableReset := allReset.Add(36 * time.Hour)
+	fableResetStr := fableReset.Format(time.RFC3339Nano)
+
+	all := &oauth.UsageData{}
+	all.SevenDay.Utilisation = 50
+	all.SevenDay.ResetsAt = allReset.Format(time.RFC3339Nano)
+
+	fable := oauth.Limit{
+		Kind:     oauth.KindWeeklyScoped,
+		Percent:  50,
+		ResetsAt: &fableResetStr,
+		Scope:    &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Fable"}},
+	}
+
+	allPred := PredictWeeklyDepletion(all, now)
+	fablePred := PredictModelWeeklyDepletion(fable, now)
+
+	assert.Equal(t, fableReset, fablePred.ResetTime)
+	assert.NotEqual(t, allPred.DepletionTime, fablePred.DepletionTime)
+	// Fable's window started later, so the same 50% was burnt faster
+	assert.True(t, fablePred.DepletionTime.Before(allPred.DepletionTime))
+}

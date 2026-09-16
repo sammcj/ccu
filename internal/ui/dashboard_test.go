@@ -6,12 +6,49 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/sammcj/ccu/internal/analysis"
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/oauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestClipRow(t *testing.T) {
+	longSuffix := "[Opus 5: 92.5%, Fable 5.1: 7.2%, Sonnet 5: 0.3%]"
+	row := formatRow("💸", "Session - Usage:", "[bar]", "9.0%", longSuffix)
+
+	t.Run("width 0 leaves the line alone", func(t *testing.T) {
+		assert.Equal(t, row, clipRow(row, 0))
+	})
+
+	t.Run("suffix is clipped to the room after its column", func(t *testing.T) {
+		width := colPosSuffix - 1 + 20
+		got := clipRow(row, width)
+
+		_, suffix, ok := strings.Cut(got, suffixJump)
+		require.True(t, ok, "suffix jump must be preserved")
+		assert.Equal(t, 20, ansi.StringWidth(suffix))
+		assert.True(t, strings.HasSuffix(suffix, "…"))
+		assert.True(t, strings.HasPrefix(got, "\x1b[2K💸"), "columns before the suffix are untouched")
+	})
+
+	t.Run("suffix dropped when its column is off screen", func(t *testing.T) {
+		got := clipRow(row, colPosSuffix-5)
+		assert.NotContains(t, got, suffixJump)
+		assert.Contains(t, got, "9.0%")
+	})
+
+	t.Run("plain lines clipped by printable width", func(t *testing.T) {
+		line := "🔮 Prediction: " + strings.Repeat("x", 100)
+		got := clipRow(line, 40)
+		assert.Equal(t, 40, ansi.StringWidth(got))
+	})
+
+	t.Run("short lines are untouched", func(t *testing.T) {
+		assert.Equal(t, row, clipRow(row, 200))
+	})
+}
 
 func TestFormatModelNameSimple(t *testing.T) {
 	tests := []struct {
@@ -262,6 +299,62 @@ func TestWeeklyPredictionAfterReset(t *testing.T) {
 
 	assert.Contains(t, result, "after reset", "should show weekly near-miss after reset")
 	assert.Contains(t, result, "Weekly limit:", "should contain weekly limit label")
+}
+
+// A per-model weekly limit (Fable) about to bind gets its own prediction segment
+// even when the All Models bucket is healthy.
+func TestWeeklyPredictionPerModelLimit(t *testing.T) {
+	weeklyReset := time.Date(2025, 12, 7, 10, 0, 0, 0, time.UTC)
+	weekStart := weeklyReset.Add(-7 * 24 * time.Hour)
+	now := weekStart.Add(5 * 24 * time.Hour) // 5 days in
+	resetStr := weeklyReset.Format(time.RFC3339)
+
+	oauthData := &oauth.UsageData{FetchedAt: now}
+	oauthData.FiveHour.ResetsAt = now.Add(3 * time.Hour).Format(time.RFC3339)
+	oauthData.FiveHour.Utilisation = 20
+	oauthData.SevenDay.ResetsAt = resetStr
+	oauthData.SevenDay.Utilisation = 20 // healthy: 4%/day
+	oauthData.Limits = []oauth.Limit{
+		{Kind: oauth.KindWeeklyAll, Percent: 20, ResetsAt: &resetStr},
+		{
+			Kind:     oauth.KindWeeklyScoped,
+			Percent:  90, // 18%/day, exhausts in ~13h, well before reset
+			ResetsAt: &resetStr,
+			Scope:    &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Fable"}},
+		},
+	}
+
+	session := &models.SessionBlock{IsActive: true}
+	result := renderPredictionWithOAuth(oauthData, session, now, true)
+
+	assert.Contains(t, result, "Weekly Fable limit:", "should predict the Fable weekly limit")
+	assert.NotContains(t, result, "Weekly limit:", "healthy All Models bucket should stay quiet")
+}
+
+// A per-model limit that won't be hit before its reset adds nothing to the line.
+func TestWeeklyPredictionPerModelLimitQuietWhenSafe(t *testing.T) {
+	weeklyReset := time.Date(2025, 12, 7, 10, 0, 0, 0, time.UTC)
+	weekStart := weeklyReset.Add(-7 * 24 * time.Hour)
+	now := weekStart.Add(5 * 24 * time.Hour)
+	resetStr := weeklyReset.Format(time.RFC3339)
+
+	oauthData := &oauth.UsageData{FetchedAt: now}
+	oauthData.FiveHour.ResetsAt = now.Add(3 * time.Hour).Format(time.RFC3339)
+	oauthData.FiveHour.Utilisation = 20
+	oauthData.SevenDay.ResetsAt = resetStr
+	oauthData.SevenDay.Utilisation = 20
+	oauthData.Limits = []oauth.Limit{
+		{
+			Kind:     oauth.KindWeeklyScoped,
+			Percent:  30,
+			ResetsAt: &resetStr,
+			Scope:    &oauth.LimitScope{Model: &oauth.LimitModel{DisplayName: "Fable"}},
+		},
+	}
+
+	result := renderPredictionWithOAuth(oauthData, &models.SessionBlock{IsActive: true}, now, true)
+
+	assert.NotContains(t, result, "Fable", "safe per-model limit should not appear")
 }
 
 func TestWeeklyPredictionDateFormat(t *testing.T) {
