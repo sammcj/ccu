@@ -17,6 +17,7 @@ import (
 	"github.com/sammcj/ccu/internal/data"
 	"github.com/sammcj/ccu/internal/modelcheck"
 	"github.com/sammcj/ccu/internal/models"
+	"github.com/sammcj/ccu/internal/pricing"
 	"github.com/sammcj/ccu/internal/ui"
 )
 
@@ -44,6 +45,9 @@ func main() {
 	if cfg.CheckModels {
 		os.Exit(runModelCheck())
 	}
+
+	// After the model check, so drift in the built-in table isn't masked
+	pricing.EnablePublished()
 
 	// Handle report mode (non-interactive output to stdout)
 	if cfg.ReportMode != models.ReportModeNone {

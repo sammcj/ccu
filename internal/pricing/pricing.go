@@ -36,13 +36,12 @@ var ModelPricing = map[string]Pricing{
 		CacheCreation: 12.50,
 		CacheRead:     0.25,
 	},
-	// Mythos 5.1 is the same model as Fable 5.1 (Project Glasswing). Upstream
-	// rate data still lists Mythos cache reads at $1.00; revisit if that changes.
+	// Mythos 5.1 is the same model as Fable 5.1 (Project Glasswing), same pricing
 	"claude-mythos-5-1": {
 		Input:         10.00,
 		Output:        50.00,
 		CacheCreation: 12.50,
-		CacheRead:     1.00,
+		CacheRead:     0.25,
 	},
 	// Fable 5 uses a new tokenizer (~30% more tokens for the same content than
 	// Opus-tier models), so its token counts are not directly comparable to
@@ -59,6 +58,12 @@ var ModelPricing = map[string]Pricing{
 		Output:        50.00,
 		CacheCreation: 12.50,
 		CacheRead:     1.00,
+	},
+	"claude-opus-5-5": {
+		Input:         4.00,
+		Output:        20.00,
+		CacheCreation: 5.00,
+		CacheRead:     0.20,
 	},
 	"claude-opus-5": {
 		Input:         5.00,
@@ -168,14 +173,13 @@ var ModelPricing = map[string]Pricing{
 }
 
 // FamilyPricing holds the current rate for each model family, used when a model
-// normalises to a version with no entry in ModelPricing. Anthropic prices every
-// live tier within a family identically (Opus 4.5 through Opus 5 are all
-// $5/$25), so a newly released version costs its family's rate far more often
-// than it costs the global Sonnet fallback.
+// normalises to a version with no entry in ModelPricing. A new version usually
+// keeps or undercuts its family's newest rate, so that rate is a far better
+// estimate than the global Sonnet fallback.
 var FamilyPricing = map[string]Pricing{
 	"fable":  {Input: 10.00, Output: 50.00, CacheCreation: 12.50, CacheRead: 0.25},
-	"mythos": {Input: 10.00, Output: 50.00, CacheCreation: 12.50, CacheRead: 1.00},
-	"opus":   {Input: 5.00, Output: 25.00, CacheCreation: 6.25, CacheRead: 0.50},
+	"mythos": {Input: 10.00, Output: 50.00, CacheCreation: 12.50, CacheRead: 0.25},
+	"opus":   {Input: 4.00, Output: 20.00, CacheCreation: 5.00, CacheRead: 0.20},
 	"sonnet": {Input: 3.00, Output: 15.00, CacheCreation: 3.75, CacheRead: 0.30},
 	"haiku":  {Input: 1.00, Output: 5.00, CacheCreation: 1.25, CacheRead: 0.10},
 }
@@ -186,7 +190,8 @@ var FamilyPricing = map[string]Pricing{
 type Source int
 
 const (
-	// SourceExact means the model has its own ModelPricing entry.
+	// SourceExact means the model has its own published rate, from ModelPricing
+	// or Anthropic's pricing page.
 	SourceExact Source = iota
 	// SourceFamily means the family is known but this version has no published
 	// rate, so the family's standing rate was used.
@@ -197,13 +202,17 @@ const (
 )
 
 // Lookup resolves a raw model name to its rates and reports where they came
-// from. The ladder is exact key → family rate → Sonnet fallback.
+// from. The ladder is exact key → published page → family rate → Sonnet fallback.
 func Lookup(model string) (Pricing, Source) {
 	normalised := models.NormaliseModelName(model)
 	if p, ok := ModelPricing[normalised]; ok {
 		return p, SourceExact
 	}
 	if family := models.FamilyOf(normalised); family != "" {
+		// The page only lists Claude families, so unknown models skip the fetch
+		if p, ok := published.lookup(normalised); ok {
+			return p, SourceExact
+		}
 		return FamilyPricing[family], SourceFamily
 	}
 	return ModelPricing[fallbackModel], SourceFallback

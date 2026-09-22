@@ -249,6 +249,10 @@ Burn rates are calculated using a proportional overlapping session method over t
 
 **Visual Indicators**: Burn rate bars use green→yellow→orange→red gradient based on intensity (percentage of limit at current rate).
 
+### Model Pricing
+
+Costs use ccu's built-in rate table. For a model missing from it, ccu reads rates from [Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing), cached for 24 hours in `<user cache dir>/ccu/pricing.json`. The page is fetched at most once per run. If the model still isn't found (or you're offline), ccu uses the model family's current rate and marks those costs as estimates.
+
 ### Predictions
 
 The tool provides intelligent cost depletion predictions:

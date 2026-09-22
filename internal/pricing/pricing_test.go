@@ -120,6 +120,21 @@ func TestCalculateCost(t *testing.T) {
 			want: 0.0175,
 		},
 		{
+			// Opus 5.5 is cheaper than Opus 5 and must not prefix-match its rates.
+			name: "opus 5.5",
+			entry: models.UsageEntry{
+				Timestamp:           time.Now(),
+				InputTokens:         1000,
+				OutputTokens:        500,
+				CacheCreationTokens: 200,
+				CacheReadTokens:     300,
+				Model:               "claude-opus-5-5[1m]",
+			},
+			// (1000 * 4 / 1M) + (500 * 20 / 1M) + (200 * 5 / 1M) + (300 * 0.2 / 1M)
+			// = 0.004 + 0.01 + 0.001 + 0.00006 = 0.01506
+			want: 0.01506,
+		},
+		{
 			name: "sonnet 5 basic usage",
 			entry: models.UsageEntry{
 				Timestamp:    time.Now(),
@@ -211,9 +226,9 @@ func TestLookupFallbackLadder(t *testing.T) {
 			wantSource: SourceExact,
 		},
 		{
-			name:       "mythos 5.1 has its own entry and keeps the upstream cache read rate",
+			name:       "mythos 5.1 shares fable 5.1's cache read rate",
 			model:      "claude-mythos-5-1",
-			want:       Pricing{Input: 10.00, Output: 50.00, CacheCreation: 12.50, CacheRead: 1.00},
+			want:       Pricing{Input: 10.00, Output: 50.00, CacheCreation: 12.50, CacheRead: 0.25},
 			wantSource: SourceExact,
 		},
 		{

@@ -93,7 +93,7 @@ func TestNormaliseModelName(t *testing.T) {
 		// Unversioned family names resolve to that family's newest release.
 		// Claude Code writes these into some JSONL entries; resolving them to an
 		// older generation would price current usage at a retired model's rate.
-		{"opus", "claude-opus-5"},
+		{"opus", "claude-opus-5-5"},
 		{"sonnet", "claude-sonnet-5"},
 		{"haiku", "claude-haiku-4-5"},
 		{"fable", "claude-fable-5-1"},

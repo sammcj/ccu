@@ -51,7 +51,7 @@ var ModelFamilies = []string{"fable", "mythos", "opus", "sonnet", "haiku"}
 var latestFamilyVersion = map[string]string{
 	"fable":  "5-1",
 	"mythos": "5-1",
-	"opus":   "5",
+	"opus":   "5-5",
 	"sonnet": "5",
 	"haiku":  "4-5",
 }
