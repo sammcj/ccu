@@ -251,7 +251,7 @@ Burn rates are calculated using a proportional overlapping session method over t
 
 ### Model Pricing
 
-Costs use ccu's built-in rate table. For a model missing from it, ccu reads rates from [Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing), cached for 24 hours in `<user cache dir>/ccu/pricing.json`. The page is fetched at most once per run. If the model still isn't found (or you're offline), ccu uses the model family's current rate and marks those costs as estimates.
+Costs use ccu's built-in rate table. For a model missing from it, ccu reads rates from [Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing), cached for 24 hours in `<user cache dir>/ccu/pricing.json`. The page is fetched at most once per run. If the model still isn't found (or you're offline), ccu uses the model family's current rate and marks those costs as estimates. The page also sets what an unversioned name such as `sonnet` means: the newest generally available release of that family it lists. ccu refreshes the cached page in the background at startup once it's a day old.
 
 ### Predictions
 

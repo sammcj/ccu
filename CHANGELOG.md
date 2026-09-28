@@ -12,7 +12,9 @@
 
 ### Changed
 
-- An unversioned `opus` model name now resolves to Opus 5.5, and unknown Opus versions are estimated at Opus 5.5 rates
+- An unversioned model name (`sonnet`, `opus`, ...) resolves to the newest generally available release of that family on Anthropic's pricing page, so a release like Sonnet 5.5 is picked up without a ccu update. ccu refreshes the page in the background at startup once its cached copy is a day old
+- The built-in fallback for an unversioned `opus` is now Opus 5.5, used until ccu has read the pricing page
+- Unknown Opus versions are estimated at Opus 5.5 rates
 
 ### Fixed
 

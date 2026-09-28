@@ -1,9 +1,11 @@
 package models
 
 import (
+	"cmp"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -44,16 +46,72 @@ func (e *UsageEntry) Hash() string {
 var ModelFamilies = []string{"fable", "mythos", "opus", "sonnet", "haiku"}
 
 // latestFamilyVersion maps a family to its newest released version, used when a
-// model string names a family with no version at all (Claude Code writes bare
-// "opus" / "sonnet" / "fable" into some JSONL entries). Guessing the newest is
+// model string names a family with no version at all (Claude Code's aliases are
+// bare "opus" / "sonnet" / "fable"; recent transcripts only use them in tool
+// inputs, not on usage entries, but older ones may differ). Guessing the newest is
 // the least-wrong option: an unversioned name always means "whatever the plan
 // currently serves", never an older generation.
+//
+// These are the versions known at build time. AdoptNewerVersions raises them as
+// Anthropic publishes new releases, so this map doesn't need a bump per release.
 var latestFamilyVersion = map[string]string{
 	"fable":  "5-1",
 	"mythos": "5-1",
 	"opus":   "5-5",
 	"sonnet": "5",
 	"haiku":  "4-5",
+}
+
+// latestMu guards latestFamilyVersion, which AdoptNewerVersions writes while
+// data loading and rendering read it.
+var latestMu sync.RWMutex
+
+// AdoptNewerVersions raises each family's latest version to the newest one named
+// in ids. It never lowers a version, so a stale or partial source can't roll an
+// unversioned name back to an older model.
+func AdoptNewerVersions(ids []string) {
+	latestMu.Lock()
+	defer latestMu.Unlock()
+	for _, id := range ids {
+		family, version, ok := parseFamilyVersion(strings.ToLower(id))
+		if !ok {
+			continue
+		}
+		if current := latestFamilyVersion[family]; current == "" || compareVersions(version, current) > 0 {
+			latestFamilyVersion[family] = version
+		}
+	}
+}
+
+// compareVersions orders "5-5" after "5" and "10" after "9".
+func compareVersions(a, b string) int {
+	as, bs := strings.Split(a, "-"), strings.Split(b, "-")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		var x, y int
+		if i < len(as) {
+			x, _ = strconv.Atoi(as[i])
+		}
+		if i < len(bs) {
+			y, _ = strconv.Atoi(bs[i])
+		}
+		if x != y {
+			return cmp.Compare(x, y)
+		}
+	}
+	return 0
+}
+
+// parseFamilyVersion extracts the family and dash-separated version from a
+// lower-cased model ID in either of Anthropic's ID grammars.
+func parseFamilyVersion(modelLower string) (family, version string, ok bool) {
+	if m := familyVersionPattern.FindStringSubmatch(modelLower); m != nil {
+		family, version = m[1], m[2]
+	} else if m := versionFamilyPattern.FindStringSubmatch(modelLower); m != nil {
+		family, version = m[2], m[1]
+	} else {
+		return "", "", false
+	}
+	return family, strings.ReplaceAll(version, ".", "-"), true
 }
 
 // familyVersionPattern captures the family and its version from a modern model
@@ -78,7 +136,6 @@ var versionFamilyPattern = regexp.MustCompile(
 // follow suit, so the two eras key differently: "claude-3-5-sonnet" but
 // "claude-sonnet-4-5". The version decides the shape, never the ID it came from.
 func canonicalName(family, version string) string {
-	version = strings.ReplaceAll(version, ".", "-")
 	major, _ := strconv.Atoi(strings.SplitN(version, "-", 2)[0])
 	if major < 4 {
 		return "claude-" + version + "-" + family
@@ -96,16 +153,15 @@ func canonicalName(family, version string) string {
 func NormaliseModelName(model string) string {
 	modelLower := strings.ToLower(model)
 
-	if m := familyVersionPattern.FindStringSubmatch(modelLower); m != nil {
-		return canonicalName(m[1], m[2])
-	}
-	if m := versionFamilyPattern.FindStringSubmatch(modelLower); m != nil {
-		return canonicalName(m[2], m[1])
+	if family, version, ok := parseFamilyVersion(modelLower); ok {
+		return canonicalName(family, version)
 	}
 
 	// A family name with no version at all - resolve to the newest release.
 	if family := FamilyOf(modelLower); family != "" {
-		return "claude-" + family + "-" + latestFamilyVersion[family]
+		latestMu.RLock()
+		defer latestMu.RUnlock()
+		return canonicalName(family, latestFamilyVersion[family])
 	}
 
 	return model

@@ -41,7 +41,9 @@ func EnablePublished() {
 	if dir, err := os.UserCacheDir(); err == nil {
 		cachePath = filepath.Join(dir, "ccu", "pricing.json")
 	}
-	published.enable(publishedURL, cachePath)
+	// Newly published models also become what a bare family name ("sonnet") means
+	published.enable(publishedURL, cachePath, models.AdoptNewerVersions)
+	go published.refreshIfStale()
 }
 
 type publishedRates struct {
@@ -53,21 +55,34 @@ type publishedRates struct {
 	enabled   bool
 	url       string
 	cachePath string
-	loaded    bool // disk cache has been read
 	fetched   bool // network fetch attempted this process
 	fetchedAt time.Time
 	rates     map[string]Pricing
+	released  []string
+	onRates   func(released []string) // told the released models whenever rates load
+}
+
+// publishedPage is what the pricing page yields: rates for every listed model,
+// and which of those are released without a qualifier such as "limited
+// availability" or "retired". Only released models may become what a bare
+// family name means.
+type publishedPage struct {
+	Rates    map[string]Pricing `json:"rates"`
+	Released []string           `json:"released"`
 }
 
 type publishedCache struct {
-	FetchedAt time.Time          `json:"fetched_at"`
-	Rates     map[string]Pricing `json:"rates"`
+	FetchedAt time.Time `json:"fetched_at"`
+	publishedPage
 }
 
-func (p *publishedRates) enable(url, cachePath string) {
+// enable reads the disk cache straight away rather than on the first miss, so
+// onRates hears about cached models before any usage data is normalised.
+func (p *publishedRates) enable(url, cachePath string, onRates func([]string)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.enabled, p.url, p.cachePath = true, url, cachePath
+	p.enabled, p.url, p.cachePath, p.onRates = true, url, cachePath, onRates
+	p.readCache()
 }
 
 // lookup returns the published rate for a normalised model name. A fresh disk
@@ -86,20 +101,39 @@ func (p *publishedRates) lookup(model string) (Pricing, bool) {
 		return rate, ok
 	}
 
-	rates, err := fetchPublished(p.url)
+	// On failure a stale cached rate still beats the family estimate
+	p.fetch()
+	rate, ok, _ := p.cached(model)
+	return rate, ok
+}
+
+// refreshIfStale fetches the page when the cache is missing or stale, so new
+// releases reach bare family names even when every model in use is already in
+// ModelPricing and no lookup ever misses.
+func (p *publishedRates) refreshIfStale() {
+	p.fetchMu.Lock()
+	defer p.fetchMu.Unlock()
+	p.mu.Lock()
+	stale := p.enabled && !p.fetched && time.Since(p.fetchedAt) >= publishedTTL
+	p.mu.Unlock()
+	if stale {
+		p.fetch()
+	}
+}
+
+// fetch must be called with fetchMu held.
+func (p *publishedRates) fetch() {
+	page, err := fetchPublished(p.url)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.fetched = true
 	if err != nil {
-		// A stale cached rate still beats the family estimate
 		log.Printf("pricing: fetching published rates: %v", err)
-	} else {
-		p.rates, p.fetchedAt = rates, time.Now()
-		p.writeCache()
+		return
 	}
-	rate, ok := p.rates[model]
-	return rate, ok
+	p.setRates(page, time.Now())
+	p.writeCache()
 }
 
 // cached answers from memory or the disk cache. settled is false when the
@@ -110,10 +144,6 @@ func (p *publishedRates) cached(model string) (rate Pricing, ok, settled bool) {
 	defer p.mu.Unlock()
 	if !p.enabled {
 		return Pricing{}, false, true
-	}
-	if !p.loaded {
-		p.loaded = true
-		p.readCache()
 	}
 	rate, ok = p.rates[model]
 	fresh := ok && time.Since(p.fetchedAt) < publishedTTL
@@ -132,14 +162,26 @@ func (p *publishedRates) readCache() {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return
 	}
-	p.rates, p.fetchedAt = c.Rates, c.FetchedAt
+	p.setRates(c.publishedPage, c.FetchedAt)
+}
+
+// setRates must be called with mu held, so onRates must not call back into
+// this package.
+func (p *publishedRates) setRates(page publishedPage, fetchedAt time.Time) {
+	p.rates, p.released, p.fetchedAt = page.Rates, page.Released, fetchedAt
+	if p.onRates != nil {
+		p.onRates(page.Released)
+	}
 }
 
 func (p *publishedRates) writeCache() {
 	if p.cachePath == "" {
 		return
 	}
-	data, err := json.Marshal(publishedCache{FetchedAt: p.fetchedAt, Rates: p.rates})
+	data, err := json.Marshal(publishedCache{
+		FetchedAt:     p.fetchedAt,
+		publishedPage: publishedPage{Rates: p.rates, Released: p.released},
+	})
 	if err != nil {
 		return
 	}
@@ -151,30 +193,30 @@ func (p *publishedRates) writeCache() {
 	}
 }
 
-func fetchPublished(url string) (map[string]Pricing, error) {
+func fetchPublished(url string) (publishedPage, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), publishedTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return publishedPage{}, err
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return publishedPage{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %s", resp.Status)
+		return publishedPage{}, fmt.Errorf("unexpected status %s", resp.Status)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPublishedSize))
 	if err != nil {
-		return nil, err
+		return publishedPage{}, err
 	}
-	rates := parsePublished(string(body))
-	if len(rates) == 0 {
-		return nil, errors.New("no model pricing table found - page layout may have changed")
+	page := parsePublished(string(body))
+	if len(page.Rates) == 0 {
+		return publishedPage{}, errors.New("no model pricing table found - page layout may have changed")
 	}
-	return rates, nil
+	return page, nil
 }
 
 // dollarPattern only accepts per-million-token rates; a cell in any other unit
@@ -184,8 +226,8 @@ var dollarPattern = regexp.MustCompile(`^\$([0-9]+(?:\.[0-9]+)?)\s*/\s*MTok\b`)
 // parsePublished reads the model pricing table from the pricing page markdown,
 // keyed by normalised model name. Columns are found by header text so a new
 // column doesn't shift the rates.
-func parsePublished(md string) map[string]Pricing {
-	rates := make(map[string]Pricing)
+func parsePublished(md string) publishedPage {
+	page := publishedPage{Rates: make(map[string]Pricing)}
 	var cols map[string]int
 	for line := range strings.SplitSeq(md, "\n") {
 		line = strings.TrimSpace(line)
@@ -200,13 +242,18 @@ func parsePublished(md string) map[string]Pricing {
 			cols = pricingColumns(cells)
 			continue
 		}
-		if model := modelFromDisplayName(cells[0]); model != "" {
-			if rate, ok := parseRow(cells, cols); ok {
-				rates[model] = rate
+		model, qualified := modelFromDisplayName(cells[0])
+		if model == "" {
+			continue
+		}
+		if rate, ok := parseRow(cells, cols); ok {
+			page.Rates[model] = rate
+			if !qualified {
+				page.Released = append(page.Released, model)
 			}
 		}
 	}
-	return rates
+	return page
 }
 
 func splitRow(line string) []string {
@@ -254,17 +301,18 @@ func parseRow(cells []string, cols map[string]int) (Pricing, bool) {
 }
 
 // modelFromDisplayName turns "Claude Opus 5.5" or "Claude Opus 4 ([retired](...))"
-// into the normalised key Lookup uses. Separator rows and non-Claude names give "".
-func modelFromDisplayName(name string) string {
-	name, _, _ = strings.Cut(name, "(")
+// into the normalised key Lookup uses, and reports whether the name carried a
+// parenthesised qualifier. Separator rows and non-Claude names give "".
+func modelFromDisplayName(name string) (model string, qualified bool) {
+	name, _, qualified = strings.Cut(name, "(")
 	name = strings.ToLower(strings.TrimSpace(name))
 	if !strings.HasPrefix(name, "claude ") {
-		return ""
+		return "", false
 	}
 	id := strings.NewReplacer(" ", "-", ".", "-").Replace(name)
 	normalised := models.NormaliseModelName(id)
 	if models.FamilyOf(normalised) == "" {
-		return ""
+		return "", false
 	}
-	return normalised
+	return normalised, qualified
 }

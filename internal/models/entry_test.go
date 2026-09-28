@@ -1,6 +1,7 @@
 package models
 
 import (
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -168,6 +169,29 @@ func TestEveryFamilyHasALatestVersion(t *testing.T) {
 		assert.NotEmpty(t, latestFamilyVersion[family],
 			"family %q needs an entry in latestFamilyVersion", family)
 	}
+}
+
+func TestAdoptNewerVersions(t *testing.T) {
+	orig := maps.Clone(latestFamilyVersion)
+	t.Cleanup(func() {
+		latestMu.Lock()
+		latestFamilyVersion = orig
+		latestMu.Unlock()
+	})
+	builtinOpus := NormaliseModelName("opus")
+
+	AdoptNewerVersions([]string{
+		"claude-sonnet-5-5", "claude-sonnet-4-6", "claude-3-5-haiku", "claude-opus-4", "gpt-5",
+	})
+	assert.Equal(t, "claude-sonnet-5-5", NormaliseModelName("sonnet"), "newer release adopted")
+	assert.Equal(t, builtinOpus, NormaliseModelName("opus"), "older release never lowers the latest")
+	assert.Equal(t, "claude-haiku-4-5", NormaliseModelName("haiku"), "claude 3 era versions compare by number")
+
+	AdoptNewerVersions([]string{"claude-sonnet-5"})
+	assert.Equal(t, "claude-sonnet-5-5", NormaliseModelName("sonnet"), "a stale source can't roll back")
+
+	AdoptNewerVersions([]string{"claude-sonnet-10"})
+	assert.Equal(t, "claude-sonnet-10", NormaliseModelName("sonnet"), "versions compare numerically, not as text")
 }
 
 // TestDisplayTokensVsTotalTokens pins down the parity contract with the Python

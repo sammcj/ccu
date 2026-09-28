@@ -26,6 +26,7 @@ const pageFixture = `# Pricing
 | Claude Opus 5.5 | $4 / MTok | $5 / MTok | $8 / MTok | $0.20 / MTok<sup>2</sup> | $20 / MTok |
 | Claude Opus 6 | $3 / MTok | $3.75 / MTok | $6 / MTok | $0.30 / MTok | $15 / MTok |
 | Claude Opus 4 ([retired, except on Google Cloud](https://example.com)) | $15 / MTok | $18.75 / MTok | $30 / MTok | $1.50 / MTok | $75 / MTok |
+| Claude Opus 7 ([limited availability](https://example.com)) | $20 / MTok | $25 / MTok | $40 / MTok | $2 / MTok | $100 / MTok |
 | Claude Haiku 4.5 | $1 / MTok | TBC | $2 / MTok | $0.10 / MTok | $5 / MTok |
 | Claude Sonnet 5 | $0.002 / KTok | $0.0025 / KTok | $0.004 / KTok | $0.0002 / KTok | $0.01 / KTok |
 | Claude Sonnet 4.6 | ~~$5 / MTok~~ $3 / MTok | $3.75 / MTok | $6 / MTok | $0.30 / MTok | $15 / MTok |
@@ -46,11 +47,14 @@ func TestParsePublished(t *testing.T) {
 		"claude-opus-5-5":  {Input: 4, Output: 20, CacheCreation: 5, CacheRead: 0.20},
 		"claude-opus-6":    {Input: 3, Output: 15, CacheCreation: 3.75, CacheRead: 0.30},
 		"claude-opus-4":    {Input: 15, Output: 75, CacheCreation: 18.75, CacheRead: 1.50},
-	}, got, "unparseable rows, other units, non-Claude rows and later tables are skipped")
+		"claude-opus-7":    {Input: 20, Output: 100, CacheCreation: 25, CacheRead: 2},
+	}, got.Rates, "unparseable rows, other units, non-Claude rows and later tables are skipped")
+	assert.Equal(t, []string{"claude-fable-5-1", "claude-opus-5-5", "claude-opus-6"}, got.Released,
+		"retired and limited availability models are priced but not released")
 }
 
 func TestParsePublishedNoTable(t *testing.T) {
-	assert.Empty(t, parsePublished("# Pricing\n\n| Plan | Price |\n| --- | --- |\n| Pro | $20 |\n"))
+	assert.Empty(t, parsePublished("# Pricing\n\n| Plan | Price |\n| --- | --- |\n| Pro | $20 |\n").Rates)
 }
 
 // pageServer serves pageFixture and counts requests.
@@ -67,8 +71,54 @@ func pageServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
 
 func newPublished(url, cachePath string) *publishedRates {
 	p := &publishedRates{}
-	p.enable(url, cachePath)
+	p.enable(url, cachePath, nil)
 	return p
+}
+
+func TestPublishedReportsModelNames(t *testing.T) {
+	srv, _ := pageServer(t)
+	cachePath := filepath.Join(t.TempDir(), "pricing.json")
+	var heard []string
+	record := func(names []string) { heard = names }
+
+	// Fetch: a miss loads the page and reports its released models
+	p := &publishedRates{}
+	p.enable(srv.URL, cachePath, record)
+	assert.Empty(t, heard, "no cache yet")
+	p.lookup("claude-opus-6")
+	assert.Equal(t, []string{"claude-fable-5-1", "claude-opus-5-5", "claude-opus-6"}, heard)
+
+	// Cache: a later run reports the cached models at enable, before any lookup
+	heard = nil
+	(&publishedRates{}).enable(srv.URL, cachePath, record)
+	assert.Contains(t, heard, "claude-opus-6")
+}
+
+func TestRefreshIfStale(t *testing.T) {
+	t.Run("missing cache fetches once", func(t *testing.T) {
+		srv, hits := pageServer(t)
+		p := newPublished(srv.URL, filepath.Join(t.TempDir(), "pricing.json"))
+		p.refreshIfStale()
+		p.refreshIfStale()
+		assert.EqualValues(t, 1, hits.Load())
+		_, ok := p.lookup("claude-opus-6")
+		assert.True(t, ok)
+		assert.EqualValues(t, 1, hits.Load(), "lookup reuses the refreshed rates")
+	})
+
+	t.Run("fresh cache does not fetch", func(t *testing.T) {
+		srv, hits := pageServer(t)
+		cachePath := filepath.Join(t.TempDir(), "pricing.json")
+		(&publishedRates{cachePath: cachePath, fetchedAt: time.Now()}).writeCache()
+		newPublished(srv.URL, cachePath).refreshIfStale()
+		assert.Zero(t, hits.Load())
+	})
+
+	t.Run("disabled does not fetch", func(t *testing.T) {
+		srv, hits := pageServer(t)
+		(&publishedRates{url: srv.URL}).refreshIfStale()
+		assert.Zero(t, hits.Load())
+	})
 }
 
 func TestPublishedLookup(t *testing.T) {
