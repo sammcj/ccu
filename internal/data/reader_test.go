@@ -92,6 +92,28 @@ func TestReadJSONLFileWithFilter(t *testing.T) {
 		assert.InDelta(t, 0.00702, entries[1].CostUSD5mCache, 1e-12)
 	})
 
+	t.Run("5m cache gap runs from the start of the previous request", func(t *testing.T) {
+		line := func(ts time.Time, id string, read int) string {
+			return fmt.Sprintf(
+				`{"type":"assistant","timestamp":%q,"requestId":%q,"message":{"id":%q,"model":"claude-opus-5-5","usage":{"input_tokens":0,"output_tokens":1,"cache_creation_input_tokens":1000,"cache_read_input_tokens":%d,"cache_creation":{"ephemeral_1h_input_tokens":1000}}}}`,
+				ts.UTC().Format(time.RFC3339), id, id, read)
+		}
+		start := now.Add(-2 * time.Hour)
+		// "a" streams a second line 4 minutes after its first; the TTL counts
+		// from when "a" started, so "b" 6 minutes later has missed a 5m cache.
+		path := writeJSONL(t, dir, "streamed.jsonl",
+			line(start, "a", 0),
+			line(start.Add(4*time.Minute), "a", 0),
+			line(start.Add(6*time.Minute), "b", 10_000),
+		)
+
+		entries, err := readJSONLFileWithFilter(path, time.Time{}, nil, make([]byte, 1024), nil)
+		require.NoError(t, err)
+		require.Len(t, entries, 3)
+		// (11000*5 + 1*20) / 1M
+		assert.InDelta(t, 0.05502, entries[2].CostUSD5mCache, 1e-12)
+	})
+
 	t.Run("cutoff filtering", func(t *testing.T) {
 		path := writeJSONL(t, dir, "cutoff.jsonl",
 			entryLine(now.Add(-2*time.Hour), "msg_old", "req_old", 10, 5),

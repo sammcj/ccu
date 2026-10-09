@@ -123,8 +123,13 @@ func readJSONLFileWithFilter(filePath string, cutoff time.Time, seen map[string]
 	hasCutoff := !cutoff.IsZero()
 	lineNum := 0
 	// Each file is one conversation (subagents get their own), so the previous
-	// request in the file is the one whose cache this request could read.
+	// request in the file is the one whose cache this request could read. The
+	// cache TTL runs from the start of a request, and a response's later lines
+	// can land minutes after its first, so gaps are measured between the first
+	// line of each response.
 	var previous time.Time
+	var previousKey string
+	var gap time.Duration
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Bytes()
@@ -148,11 +153,13 @@ func readJSONLFileWithFilter(filePath string, cutoff time.Time, seen map[string]
 			continue
 		}
 
-		var gap time.Duration
-		if !previous.IsZero() {
-			gap = entry.Timestamp.Sub(previous)
+		if key := entry.Hash(); key != previousKey {
+			gap = 0
+			if !previous.IsZero() {
+				gap = entry.Timestamp.Sub(previous)
+			}
+			previous, previousKey = entry.Timestamp, key
 		}
-		previous = entry.Timestamp
 		entry.CostUSD5mCache = pricing.CostWith5mCache(*entry, gap)
 
 		// Apply time filter during parse

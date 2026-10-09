@@ -8,6 +8,10 @@
 
 - The 1H Cache comparison on the `Session - Cache Hit` row includes the session cost so far, so the difference has a scale: `[1H Cache: 100% (+$3.93 of $98.12 vs 5m)]`
 
+### Fixed
+
+- The 1H cache comparison measured the gap between requests from the previous response's last transcript line, which can land minutes after the request started. The cache TTL runs from the start of a request, so gaps are now measured from each response's first line, which slightly undercounted 5-minute cache misses before
+
 ## [0.2.17] - 2026-10-09
 
 ### Added
