@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sammcj/ccu/internal/models"
+	"github.com/sammcj/ccu/internal/pricing"
 )
 
 // jsonlFile carries the stat data captured during the directory walk so the
@@ -121,6 +122,9 @@ func readJSONLFileWithFilter(filePath string, cutoff time.Time, seen map[string]
 
 	hasCutoff := !cutoff.IsZero()
 	lineNum := 0
+	// Each file is one conversation (subagents get their own), so the previous
+	// request in the file is the one whose cache this request could read.
+	var previous time.Time
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Bytes()
@@ -143,6 +147,13 @@ func readJSONLFileWithFilter(filePath string, cutoff time.Time, seen map[string]
 		if entry == nil {
 			continue
 		}
+
+		var gap time.Duration
+		if !previous.IsZero() {
+			gap = entry.Timestamp.Sub(previous)
+		}
+		previous = entry.Timestamp
+		entry.CostUSD5mCache = pricing.CostWith5mCache(*entry, gap)
 
 		// Apply time filter during parse
 		if hasCutoff && entry.Timestamp.Before(cutoff) {

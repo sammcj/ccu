@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -271,6 +272,54 @@ func getSessionDistributionString(session *models.SessionBlock) string {
 	}
 
 	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+// sessionCache1hString returns the share of the session's cache writes that
+// went to the 1-hour cache, and what the session cost against the 5-minute
+// cache: "[1H Cache: 100% (+$11.75 vs 5m)]". It returns "" with no cache
+// writes, and leaves out the comparison with no 1-hour writes to judge.
+func sessionCache1hString(session *models.SessionBlock) string {
+	if session == nil {
+		return ""
+	}
+	var writes, writes1h int
+	var cost, cost5m float64
+	for _, stats := range session.PerModelStats {
+		writes += stats.CacheCreationTokens
+		writes1h += stats.CacheCreation1hTokens
+		cost += stats.CostUSD
+		cost5m += stats.CostUSD5mCache
+	}
+	if writes == 0 {
+		return ""
+	}
+	// Label coloured like the model names beside it, in the theme's muted purple
+	label := lipgloss.NewStyle().Foreground(ColorMuted).Render("1H Cache")
+	out := fmt.Sprintf("%s: %.0f%%", label, float64(writes1h)/float64(writes)*100)
+	if writes1h > 0 && cost5m > 0 {
+		extra := cost - cost5m
+		sign := "+"
+		if extra < 0 {
+			sign = "-"
+		}
+		style := cacheEfficiencyStyle(-extra / cost5m * 100)
+		out += " (" + style.Render(fmt.Sprintf("%s$%.2f vs 5m", sign, math.Abs(extra))) + ")"
+	}
+	return "[" + out + "]"
+}
+
+// cacheEfficiencyStyle colours the 1-hour cache saving: green when it paid
+// off, amber when it cost a little more than the 5-minute cache, orange when it
+// cost 5% or more.
+func cacheEfficiencyStyle(saving float64) lipgloss.Style {
+	colour := ColorSuccess
+	switch {
+	case saving <= -5:
+		colour = ColorPercent70
+	case saving < 0:
+		colour = ColorPercent60
+	}
+	return lipgloss.NewStyle().Foreground(colour)
 }
 
 // renderBurnRates renders token and cost burn rates on one line
@@ -736,7 +785,7 @@ func weeklyPredictionPart(label string, prediction analysis.WeeklyPrediction, no
 
 // renderCacheHitRateLine renders a cache hit rate row, styled to match other dashboard rows.
 // Cache hit rate is "good when high", so the colour gradient is inverted: 100% → green, 0% → red.
-func renderCacheHitRateLine(label string, rate float64, barWidth int) string {
+func renderCacheHitRateLine(label string, rate float64, barWidth int, suffix string) string {
 	// Cache hit thresholds: >=93% green, >=90% yellow, >=85% orange, <85% red
 	style := GetCacheHitRateStyle(rate)
 
@@ -745,7 +794,7 @@ func renderCacheHitRateLine(label string, rate float64, barWidth int) string {
 		label,
 		style.Render(renderBar(rate, barWidth)),
 		style.Render(fmt.Sprintf("%.1f%%", rate)),
-		"",
+		suffix,
 	)
 }
 
@@ -765,7 +814,7 @@ func renderSessionCacheHitRate(session *models.SessionBlock, barWidth int) strin
 		return ""
 	}
 	rate := analysis.CalculateCacheHitRate(input, cacheCreate, cacheRead)
-	return renderCacheHitRateLine("Session - Cache Hit:", rate, barWidth)
+	return renderCacheHitRateLine("Session - Cache Hit:", rate, barWidth, sessionCache1hString(session))
 }
 
 // weeklyCacheHitWarnThreshold is the rate below which the weekly cache hit row is shown.
@@ -795,7 +844,7 @@ func renderWeeklyCacheHitRate(blocks []models.SessionBlock, now time.Time, barWi
 	if rate >= weeklyCacheHitWarnThreshold {
 		return ""
 	}
-	return renderCacheHitRateLine("Weekly - Cache Hit:", rate, barWidth)
+	return renderCacheHitRateLine("Weekly - Cache Hit:", rate, barWidth, "")
 }
 
 // renderOAuthLimitWarning renders warning if OAuth limits are approaching

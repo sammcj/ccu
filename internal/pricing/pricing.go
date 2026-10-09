@@ -3,6 +3,7 @@ package pricing
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/sammcj/ccu/internal/models"
 )
@@ -25,6 +26,14 @@ type Pricing struct {
 	Output        float64
 	CacheCreation float64
 	CacheRead     float64
+	// LongContext, when set, replaces every rate above for a request whose
+	// prompt (input + cache write + cache read tokens) exceeds
+	// LongContextThreshold. Haiku 5.5 is priced this way.
+	LongContextThreshold int      `json:",omitempty"`
+	LongContext          *Pricing `json:",omitempty"`
+	// FastMultiplier scales every rate for a fast mode request. Zero means the
+	// model has no fast mode, so its fast requests bill at standard rates.
+	FastMultiplier float64 `json:",omitempty"`
 }
 
 // ModelPricing contains pricing for all known models (per 1M tokens in USD)
@@ -60,22 +69,25 @@ var ModelPricing = map[string]Pricing{
 		CacheRead:     1.00,
 	},
 	"claude-opus-5-5": {
-		Input:         4.00,
-		Output:        20.00,
-		CacheCreation: 5.00,
-		CacheRead:     0.20,
+		Input:          4.00,
+		Output:         20.00,
+		CacheCreation:  5.00,
+		CacheRead:      0.20,
+		FastMultiplier: 2,
 	},
 	"claude-opus-5": {
-		Input:         5.00,
-		Output:        25.00,
-		CacheCreation: 6.25,
-		CacheRead:     0.50,
+		Input:          5.00,
+		Output:         25.00,
+		CacheCreation:  6.25,
+		CacheRead:      0.50,
+		FastMultiplier: 2,
 	},
 	"claude-opus-4-8": {
-		Input:         5.00,
-		Output:        25.00,
-		CacheCreation: 6.25,
-		CacheRead:     0.50,
+		Input:          5.00,
+		Output:         25.00,
+		CacheCreation:  6.25,
+		CacheRead:      0.50,
+		FastMultiplier: 2,
 	},
 	"claude-opus-4-7": {
 		Input:         5.00,
@@ -95,9 +107,15 @@ var ModelPricing = map[string]Pricing{
 		CacheCreation: 6.25,
 		CacheRead:     0.50,
 	},
-	// Introductory rates, not the standing Sonnet tier - Anthropic is discounting
-	// Sonnet 5 to $2/$10 for a limited period. FamilyPricing keeps the usual
-	// $3/$15 so a future Sonnet does not inherit a promotional rate.
+	// Cache reads are 0.05x input on Sonnet 5.5, half the usual 0.1x
+	"claude-sonnet-5-5": {
+		Input:         2.00,
+		Output:        10.00,
+		CacheCreation: 2.50,
+		CacheRead:     0.10,
+	},
+	// Introductory rates - Anthropic discounts Sonnet 5 to $2/$10 for a limited
+	// period, so these may rise. Sonnet 5.5 is $2/$10 at standard pricing.
 	"claude-sonnet-5": {
 		Input:         2.00,
 		Output:        10.00,
@@ -115,6 +133,14 @@ var ModelPricing = map[string]Pricing{
 		Output:        15.00,
 		CacheCreation: 3.75,
 		CacheRead:     0.30,
+	},
+	"claude-haiku-5-5": {
+		Input:                0.10,
+		Output:               0.50,
+		CacheCreation:        0.125,
+		CacheRead:            0.01,
+		LongContextThreshold: 100_000,
+		LongContext:          &Pricing{Input: 0.50, Output: 2.50, CacheCreation: 0.625, CacheRead: 0.05},
 	},
 	"claude-haiku-4-5": {
 		Input:         1.00,
@@ -179,9 +205,9 @@ var ModelPricing = map[string]Pricing{
 var FamilyPricing = map[string]Pricing{
 	"fable":  {Input: 10.00, Output: 50.00, CacheCreation: 12.50, CacheRead: 0.25},
 	"mythos": {Input: 10.00, Output: 50.00, CacheCreation: 12.50, CacheRead: 0.25},
-	"opus":   {Input: 4.00, Output: 20.00, CacheCreation: 5.00, CacheRead: 0.20},
-	"sonnet": {Input: 3.00, Output: 15.00, CacheCreation: 3.75, CacheRead: 0.30},
-	"haiku":  {Input: 1.00, Output: 5.00, CacheCreation: 1.25, CacheRead: 0.10},
+	"opus":   ModelPricing["claude-opus-5-5"],
+	"sonnet": ModelPricing["claude-sonnet-5-5"],
+	"haiku":  ModelPricing["claude-haiku-5-5"],
 }
 
 // Source records where Lookup found a model's rates. Anything other than
@@ -218,27 +244,67 @@ func Lookup(model string) (Pricing, Source) {
 	return ModelPricing[fallbackModel], SourceFallback
 }
 
-// apply converts token counts to USD at the given rates.
-func (p Pricing) apply(input, output, cacheCreation, cacheRead int) float64 {
+// cacheWrite1hMultiplier is Anthropic's 1-hour cache write price as a multiple
+// of base input. It holds for every model and tier on the pricing page, and
+// -check-models compares it against upstream.
+const cacheWrite1hMultiplier = 2.0
+
+// CacheCreation1h is the per-million rate for writes to the 1-hour cache.
+// CacheCreation is the 5-minute rate.
+func (p Pricing) CacheCreation1h() float64 {
+	return p.Input * cacheWrite1hMultiplier
+}
+
+// cost converts one request's tokens to USD. It must be given a single request:
+// a long-context tier is chosen by that request's prompt length, so summed
+// counts would pick the wrong tier.
+func (p Pricing) cost(e models.UsageEntry) float64 {
+	fast := p.FastMultiplier
+	if p.LongContext != nil && e.InputTokens+e.CacheCreationTokens+e.CacheReadTokens > p.LongContextThreshold {
+		p = *p.LongContext
+	}
+	// Cache multipliers stack on top of fast mode, so every rate scales
+	if e.FastMode && fast > 0 {
+		p.Input *= fast
+		p.Output *= fast
+		p.CacheCreation *= fast
+		p.CacheRead *= fast
+	}
+	write1h := e.CacheCreation1hTokens
+	write5m := e.CacheCreationTokens - write1h
 	cost := 0.0
-	cost += float64(input) * p.Input / 1_000_000
-	cost += float64(output) * p.Output / 1_000_000
-	cost += float64(cacheCreation) * p.CacheCreation / 1_000_000
-	cost += float64(cacheRead) * p.CacheRead / 1_000_000
+	cost += float64(e.InputTokens) * p.Input / 1_000_000
+	cost += float64(e.OutputTokens) * p.Output / 1_000_000
+	cost += float64(write5m) * p.CacheCreation / 1_000_000
+	cost += float64(write1h) * p.CacheCreation1h() / 1_000_000
+	cost += float64(e.CacheReadTokens) * p.CacheRead / 1_000_000
 	return cost
 }
 
 // CalculateCost calculates the cost of a usage entry in USD
 func CalculateCost(entry models.UsageEntry) float64 {
 	pricing, _ := Lookup(entry.Model)
-	return pricing.apply(entry.InputTokens, entry.OutputTokens,
-		entry.CacheCreationTokens, entry.CacheReadTokens)
+	return pricing.cost(entry)
 }
 
-// CalculateCostForTokens calculates cost for a specific model and token counts
-func CalculateCostForTokens(model string, input, output, cacheCreation, cacheRead int) float64 {
-	pricing, _ := Lookup(model)
-	return pricing.apply(input, output, cacheCreation, cacheRead)
+// cacheTTL5m and cacheTTL1h are the two prompt cache lifetimes.
+const (
+	cacheTTL5m = 5 * time.Minute
+	cacheTTL1h = time.Hour
+)
+
+// CostWith5mCache is what a request would have cost with only the 5-minute
+// cache, given the time since the previous request in the same conversation.
+// A read more than 5 minutes but at most an hour after it was kept alive by the
+// 1-hour cache, so under the 5-minute cache those tokens are written again.
+// Reads after a longer gap came from another source and are left as reads.
+func CostWith5mCache(e models.UsageEntry, sincePrevious time.Duration) float64 {
+	if sincePrevious > cacheTTL5m && sincePrevious <= cacheTTL1h {
+		e.CacheCreationTokens += e.CacheReadTokens
+		e.CacheReadTokens = 0
+	}
+	e.CacheCreation1hTokens = 0
+	return CalculateCost(e)
 }
 
 // Estimate names a model CCU has no exact rate for. Family is the family whose

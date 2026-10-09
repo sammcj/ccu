@@ -1,10 +1,12 @@
 package pricing
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,11 +30,23 @@ const pageFixture = `# Pricing
 | Claude Opus 4 ([retired, except on Google Cloud](https://example.com)) | $15 / MTok | $18.75 / MTok | $30 / MTok | $1.50 / MTok | $75 / MTok |
 | Claude Opus 7 ([limited availability](https://example.com)) | $20 / MTok | $25 / MTok | $40 / MTok | $2 / MTok | $100 / MTok |
 | Claude Haiku 4.5 | $1 / MTok | TBC | $2 / MTok | $0.10 / MTok | $5 / MTok |
+| Claude Haiku 6 (for prompts up to 100,000 tokens) | $0.10 / MTok | $0.125 / MTok | $0.20 / MTok | $0.01 / MTok | $0.50 / MTok |
+| Claude Haiku 6 (for prompts over 100,000 tokens) | $0.50 / MTok | $0.625 / MTok | $1 / MTok | $0.05 / MTok | $2.50 / MTok |
+| Claude Sonnet 6 (for prompts over 200,000 tokens) | $6 / MTok | $7.50 / MTok | $12 / MTok | $0.60 / MTok | $30 / MTok |
 | Claude Sonnet 5 | $0.002 / KTok | $0.0025 / KTok | $0.004 / KTok | $0.0002 / KTok | $0.01 / KTok |
 | Claude Sonnet 4.6 | ~~$5 / MTok~~ $3 / MTok | $3.75 / MTok | $6 / MTok | $0.30 / MTok | $15 / MTok |
 | Some Other Model | $1 / MTok | $1 / MTok | $1 / MTok | $1 / MTok | $1 / MTok |
 
 Footnotes follow.
+
+### Fast mode pricing
+
+| Model | Input | Output |
+| ----- | ----- | ------ |
+| Claude Opus 5.5 | $8 / MTok | $40 / MTok |
+| Claude Opus 6 / Claude Opus 4 | $6 / MTok | $30 / MTok |
+| Claude Fable 5.1 | $15 / MTok | $60 / MTok |
+| Claude Opus 9 | $2 / MTok | $2 / MTok |
 
 | Model | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |
 | :---- | :---------------- | :-------------- | :-------------- | :----------------------- | :------------ |
@@ -44,13 +58,68 @@ func TestParsePublished(t *testing.T) {
 
 	assert.Equal(t, map[string]Pricing{
 		"claude-fable-5-1": {Input: 10, Output: 50, CacheCreation: 12.50, CacheRead: 0.25},
-		"claude-opus-5-5":  {Input: 4, Output: 20, CacheCreation: 5, CacheRead: 0.20},
-		"claude-opus-6":    {Input: 3, Output: 15, CacheCreation: 3.75, CacheRead: 0.30},
+		"claude-opus-5-5":  {Input: 4, Output: 20, CacheCreation: 5, CacheRead: 0.20, FastMultiplier: 2},
+		"claude-opus-6":    {Input: 3, Output: 15, CacheCreation: 3.75, CacheRead: 0.30, FastMultiplier: 2},
 		"claude-opus-4":    {Input: 15, Output: 75, CacheCreation: 18.75, CacheRead: 1.50},
 		"claude-opus-7":    {Input: 20, Output: 100, CacheCreation: 25, CacheRead: 2},
-	}, got.Rates, "unparseable rows, other units, non-Claude rows and later tables are skipped")
-	assert.Equal(t, []string{"claude-fable-5-1", "claude-opus-5-5", "claude-opus-6"}, got.Released,
-		"retired and limited availability models are priced but not released")
+		"claude-haiku-6": {
+			Input: 0.10, Output: 0.50, CacheCreation: 0.125, CacheRead: 0.01,
+			LongContextThreshold: 100_000,
+			LongContext:          &Pricing{Input: 0.50, Output: 2.50, CacheCreation: 0.625, CacheRead: 0.05},
+		},
+	}, got.Rates, "unparseable rows, other units, non-Claude rows, incomplete tiers and later tables are skipped; "+
+		"fast mode applies only as a premium on both input and output")
+	assert.Equal(t, []string{"claude-fable-5-1", "claude-opus-5-5", "claude-opus-6", "claude-haiku-6"}, got.Released,
+		"retired and limited availability models are priced but not released; prompt-size tiers are released")
+}
+
+// TestParsePublishedTierEdgeCases covers page layouts where trusting any one row
+// would cache a rate that is wrong on one side of the threshold.
+func TestParsePublishedTierEdgeCases(t *testing.T) {
+	const header = "| Model | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |\n| --- | --- | --- | --- | --- | --- |\n"
+	const rates = " | $1 / MTok | $1.25 / MTok | $2 / MTok | $0.10 / MTok | $5 / MTok |\n"
+	page := parsePublished(header +
+		"| Claude Sonnet 7" + rates +
+		"| Claude Sonnet 7 (for prompts over 200,000 tokens)" + rates +
+		"| Claude Haiku 7 (for prompts up to 100K tokens)" + rates +
+		"| Claude Haiku 7 (for prompts over 100K tokens)" + rates +
+		"| Claude Opus 8 ([limited availability](https://example.com)) (for prompts up to 100,000 tokens)" + rates +
+		"| Claude Opus 8 ([limited availability](https://example.com)) (for prompts over 100,000 tokens)" + rates)
+
+	assert.NotContains(t, page.Rates, "claude-sonnet-7", "a flat row plus a lone upper tier is incomplete")
+	assert.NotContains(t, page.Released, "claude-sonnet-7")
+	assert.NotContains(t, page.Rates, "claude-haiku-7", "unrecognised tier wording")
+	assert.Contains(t, page.Rates, "claude-opus-8", "limited availability models are still priced")
+	assert.NotContains(t, page.Released, "claude-opus-8", "a tier note doesn't hide another qualifier")
+}
+
+// TestBuiltinFastMultipliersMatchPage pins the hand-coded fast mode premiums to
+// the pricing page's fast mode table, copied verbatim (2026-10-09). Built-in
+// rates win over the page, so a repricing would otherwise go unnoticed.
+func TestBuiltinFastMultipliersMatchPage(t *testing.T) {
+	const header = "| Model | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |\n| --- | --- | --- | --- | --- | --- |\n"
+	models := map[string]string{
+		"claude-opus-5-5": "Opus 5.5", "claude-opus-5": "Opus 5",
+		"claude-opus-4-8": "Opus 4.8", "claude-opus-4-6": "Opus 4.6",
+	}
+	var rows strings.Builder
+	for key, name := range models {
+		p := ModelPricing[key]
+		fmt.Fprintf(&rows, "| Claude %s | $%g / MTok | $%g / MTok | $1 / MTok | $%g / MTok | $%g / MTok |\n",
+			name, p.Input, p.CacheCreation, p.CacheRead, p.Output)
+	}
+	const fastSection = "\n### Fast mode pricing\n\n" +
+		"```bash\n# not a heading\n```\n\n" +
+		"| Model                           | Input      | Output     |\n" +
+		"| ------------------------------- | ---------- | ---------- |\n" +
+		"| Claude Opus 5.5                 | $8 / MTok  | $40 / MTok |\n" +
+		"| Claude Opus 5 / Claude Opus 4.8 | $10 / MTok | $50 / MTok |\n"
+
+	page := parsePublished(header + rows.String() + fastSection)
+	for key := range models {
+		require.Contains(t, page.Rates, key)
+		assert.Equal(t, ModelPricing[key].FastMultiplier, page.Rates[key].FastMultiplier, key)
+	}
 }
 
 func TestParsePublishedNoTable(t *testing.T) {
@@ -86,7 +155,7 @@ func TestPublishedReportsModelNames(t *testing.T) {
 	p.enable(srv.URL, cachePath, record)
 	assert.Empty(t, heard, "no cache yet")
 	p.lookup("claude-opus-6")
-	assert.Equal(t, []string{"claude-fable-5-1", "claude-opus-5-5", "claude-opus-6"}, heard)
+	assert.Equal(t, []string{"claude-fable-5-1", "claude-opus-5-5", "claude-opus-6", "claude-haiku-6"}, heard)
 
 	// Cache: a later run reports the cached models at enable, before any lookup
 	heard = nil
@@ -122,7 +191,7 @@ func TestRefreshIfStale(t *testing.T) {
 }
 
 func TestPublishedLookup(t *testing.T) {
-	opus55 := Pricing{Input: 4, Output: 20, CacheCreation: 5, CacheRead: 0.20}
+	opus55 := Pricing{Input: 4, Output: 20, CacheCreation: 5, CacheRead: 0.20, FastMultiplier: 2}
 
 	t.Run("disabled never fetches", func(t *testing.T) {
 		srv, hits := pageServer(t)
@@ -142,9 +211,13 @@ func TestPublishedLookup(t *testing.T) {
 		assert.FileExists(t, cachePath)
 
 		// A new process reads the fresh cache without a request
-		got, ok = newPublished(srv.URL, cachePath).lookup("claude-opus-5-5")
+		later := newPublished(srv.URL, cachePath)
+		got, ok = later.lookup("claude-opus-5-5")
 		require.True(t, ok)
 		assert.Equal(t, opus55, got)
+		tiered, ok := later.lookup("claude-haiku-6")
+		require.True(t, ok)
+		assert.Equal(t, parsePublished(pageFixture).Rates["claude-haiku-6"], tiered, "tiers survive the cache")
 		assert.EqualValues(t, 1, hits.Load())
 	})
 
@@ -272,7 +345,7 @@ func TestLookupUsesPublishedRates(t *testing.T) {
 
 	got, source := Lookup("claude-opus-6[1m]")
 	assert.Equal(t, SourceExact, source)
-	assert.Equal(t, Pricing{Input: 3, Output: 15, CacheCreation: 3.75, CacheRead: 0.30}, got)
+	assert.Equal(t, Pricing{Input: 3, Output: 15, CacheCreation: 3.75, CacheRead: 0.30, FastMultiplier: 2}, got)
 	assert.Nil(t, EstimatedModels([]string{"claude-opus-6"}), "a published rate is not an estimate")
 
 	// Built-in rates win over the page

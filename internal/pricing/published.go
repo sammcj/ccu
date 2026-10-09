@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -227,9 +229,11 @@ var dollarPattern = regexp.MustCompile(`^\$([0-9]+(?:\.[0-9]+)?)\s*/\s*MTok\b`)
 // keyed by normalised model name. Columns are found by header text so a new
 // column doesn't shift the rates.
 func parsePublished(md string) publishedPage {
+	lines := strings.Split(md, "\n")
 	page := publishedPage{Rates: make(map[string]Pricing)}
+	tiers := newTierRows()
 	var cols map[string]int
-	for line := range strings.SplitSeq(md, "\n") {
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "|") {
 			if cols != nil {
@@ -239,21 +243,176 @@ func parsePublished(md string) publishedPage {
 		}
 		cells := splitRow(line)
 		if cols == nil {
-			cols = pricingColumns(cells)
+			cols = headerColumns(cells, modelColumns...)
 			continue
 		}
-		model, qualified := modelFromDisplayName(cells[0])
+		model, note := modelFromDisplayName(cells[0])
 		if model == "" {
 			continue
 		}
-		if rate, ok := parseRow(cells, cols); ok {
-			page.Rates[model] = rate
-			if !qualified {
-				page.Released = append(page.Released, model)
+		rate, ok := parseRow(cells, cols)
+		if !ok || tiers.add(model, note, rate) {
+			continue
+		}
+		page.Rates[model] = rate
+		if note == "" {
+			page.Released = append(page.Released, model)
+		}
+	}
+	tiers.merge(&page)
+	applyFastMode(page.Rates, lines)
+	return page
+}
+
+// applyFastMode sets FastMultiplier from the page's fast mode table. Fast mode
+// is a premium on the model's standard rates, so a row whose input and output
+// premiums differ, or that isn't a premium at all, is skipped.
+func applyFastMode(rates map[string]Pricing, lines []string) {
+	inSection, inFence := false, false
+	var cols map[string]int
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// A "# comment" in a code block is not a heading
+		if strings.HasPrefix(line, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			if cols != nil {
+				return
+			}
+			inSection = strings.Contains(strings.ToLower(line), "fast mode pricing")
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		if !strings.HasPrefix(line, "|") {
+			if cols != nil {
+				return
+			}
+			continue
+		}
+		cells := splitRow(line)
+		if cols == nil {
+			if cols = headerColumns(cells, "input", "output"); cols == nil {
+				return
+			}
+			continue
+		}
+		input, okIn := dollarCell(cells, cols["input"])
+		output, okOut := dollarCell(cells, cols["output"])
+		if !okIn || !okOut {
+			continue
+		}
+		// One row can price several models: "Claude Opus 5 / Claude Opus 4.8"
+		for name := range strings.SplitSeq(cells[0], "/") {
+			model, _ := modelFromDisplayName(name)
+			rate, ok := rates[model]
+			if !ok || rate.Input == 0 || rate.Output == 0 {
+				continue
+			}
+			multiplier := input / rate.Input
+			if multiplier <= 1 || math.Abs(output/rate.Output-multiplier) > 1e-6 {
+				continue
+			}
+			rate.FastMultiplier = multiplier
+			rates[model] = rate
+		}
+	}
+}
+
+// tierPattern matches the notes on a model priced by prompt length, e.g.
+// "for prompts up to 100,000 tokens" and "for prompts over 100,000 tokens".
+var tierPattern = regexp.MustCompile(`(?i)prompts (up to|over) ([0-9,]+) tokens`)
+
+type tierRow struct {
+	rate      Pricing
+	threshold int
+}
+
+// tierRows collects the rows of each prompt-length priced model so they can be
+// merged into one Pricing.
+type tierRows struct {
+	order      []string
+	upTo, over map[string]tierRow
+	bad        map[string]bool // a prompt note this parser can't read
+	qualified  map[string]bool // a tier note that also carries e.g. "limited availability"
+}
+
+func newTierRows() *tierRows {
+	return &tierRows{
+		upTo: map[string]tierRow{}, over: map[string]tierRow{},
+		bad: map[string]bool{}, qualified: map[string]bool{},
+	}
+}
+
+// add records a row whose note mentions prompts and reports whether it did.
+// Any such row marks the model as tiered, even when the note can't be read.
+func (t *tierRows) add(model, note string, rate Pricing) bool {
+	if !strings.Contains(strings.ToLower(note), "prompt") {
+		return false
+	}
+	if !t.bad[model] && !t.qualified[model] {
+		if _, seen := t.upTo[model]; !seen {
+			if _, seen := t.over[model]; !seen {
+				t.order = append(t.order, model)
 			}
 		}
 	}
-	return page
+	m := tierPattern.FindStringSubmatch(note)
+	if m == nil {
+		t.bad[model] = true
+		return true
+	}
+	threshold, err := strconv.Atoi(strings.ReplaceAll(m[2], ",", ""))
+	if err != nil {
+		t.bad[model] = true
+		return true
+	}
+	if tierQualified(note) {
+		t.qualified[model] = true
+	}
+	if strings.EqualFold(m[1], "up to") {
+		t.upTo[model] = tierRow{rate, threshold}
+	} else {
+		t.over[model] = tierRow{rate, threshold}
+	}
+	return true
+}
+
+// merge prices each tiered model from both of its tiers. A model with an
+// unreadable or incomplete pair is removed outright, including any flat row
+// listed for it, so it falls back to a flagged estimate rather than an exact
+// rate that is wrong on one side of the threshold.
+func (t *tierRows) merge(page *publishedPage) {
+	for _, model := range t.order {
+		low, okLow := t.upTo[model]
+		high, okHigh := t.over[model]
+		page.Released = slices.DeleteFunc(page.Released, func(m string) bool { return m == model })
+		if t.bad[model] || !okLow || !okHigh || low.threshold != high.threshold {
+			delete(page.Rates, model)
+			continue
+		}
+		rate := low.rate
+		rate.LongContextThreshold = low.threshold
+		rate.LongContext = &high.rate
+		page.Rates[model] = rate
+		if !t.qualified[model] {
+			page.Released = append(page.Released, model)
+		}
+	}
+}
+
+// tierQualified reports whether a tier note carries anything beyond the tier
+// itself, such as "[limited availability](...)) (for prompts over ...".
+func tierQualified(note string) bool {
+	rest := strings.TrimSpace(tierPattern.ReplaceAllString(note, ""))
+	rest = strings.TrimSpace(strings.TrimSuffix(rest, "for"))
+	return strings.Trim(rest, "() ") != ""
 }
 
 func splitRow(line string) []string {
@@ -264,10 +423,12 @@ func splitRow(line string) []string {
 	return cells
 }
 
-// pricingColumns maps each rate to its column index, or returns nil when the
-// row isn't the model pricing table's header.
-func pricingColumns(header []string) map[string]int {
-	want := []string{"base input tokens", "5m cache writes", "cache hits and refreshes", "output tokens"}
+// modelColumns are the model pricing table's rate columns, in Pricing field order.
+var modelColumns = []string{"base input tokens", "output tokens", "5m cache writes", "cache hits and refreshes"}
+
+// headerColumns maps each lower-cased header cell to its column index, or
+// returns nil when any wanted column is missing.
+func headerColumns(header []string, want ...string) map[string]int {
 	cols := make(map[string]int)
 	for i, cell := range header {
 		cols[strings.ToLower(cell)] = i
@@ -282,17 +443,9 @@ func pricingColumns(header []string) map[string]int {
 
 func parseRow(cells []string, cols map[string]int) (Pricing, bool) {
 	var vals [4]float64
-	for i, name := range []string{"base input tokens", "output tokens", "5m cache writes", "cache hits and refreshes"} {
-		idx := cols[name]
-		if idx >= len(cells) {
-			return Pricing{}, false
-		}
-		m := dollarPattern.FindStringSubmatch(cells[idx])
-		if m == nil {
-			return Pricing{}, false
-		}
-		v, err := strconv.ParseFloat(m[1], 64)
-		if err != nil {
+	for i, name := range modelColumns {
+		v, ok := dollarCell(cells, cols[name])
+		if !ok {
 			return Pricing{}, false
 		}
 		vals[i] = v
@@ -300,19 +453,32 @@ func parseRow(cells []string, cols map[string]int) (Pricing, bool) {
 	return Pricing{Input: vals[0], Output: vals[1], CacheCreation: vals[2], CacheRead: vals[3]}, true
 }
 
+// dollarCell reads a per-million-token rate from cells[idx].
+func dollarCell(cells []string, idx int) (float64, bool) {
+	if idx >= len(cells) {
+		return 0, false
+	}
+	m := dollarPattern.FindStringSubmatch(cells[idx])
+	if m == nil {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(m[1], 64)
+	return v, err == nil
+}
+
 // modelFromDisplayName turns "Claude Opus 5.5" or "Claude Opus 4 ([retired](...))"
-// into the normalised key Lookup uses, and reports whether the name carried a
-// parenthesised qualifier. Separator rows and non-Claude names give "".
-func modelFromDisplayName(name string) (model string, qualified bool) {
-	name, _, qualified = strings.Cut(name, "(")
+// into the normalised key Lookup uses, plus the parenthesised note if any.
+// Separator rows and non-Claude names give "".
+func modelFromDisplayName(name string) (model, note string) {
+	name, note, _ = strings.Cut(name, "(")
 	name = strings.ToLower(strings.TrimSpace(name))
 	if !strings.HasPrefix(name, "claude ") {
-		return "", false
+		return "", ""
 	}
 	id := strings.NewReplacer(" ", "-", ".", "-").Replace(name)
 	normalised := models.NormaliseModelName(id)
 	if models.FamilyOf(normalised) == "" {
-		return "", false
+		return "", ""
 	}
-	return normalised, qualified
+	return normalised, strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(note), ")"))
 }

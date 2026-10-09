@@ -90,8 +90,10 @@ func (sb *SessionBlock) AddEntry(entry UsageEntry) {
 	stats.InputTokens += entry.InputTokens
 	stats.OutputTokens += entry.OutputTokens
 	stats.CacheCreationTokens += entry.CacheCreationTokens
+	stats.CacheCreation1hTokens += entry.CacheCreation1hTokens
 	stats.CacheReadTokens += entry.CacheReadTokens
 	stats.CostUSD += entry.CostUSD
+	stats.CostUSD5mCache += entry.CostUSD5mCache
 	stats.MessageCount++
 }
 

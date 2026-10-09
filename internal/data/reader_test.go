@@ -69,6 +69,29 @@ func TestReadJSONLFileWithFilter(t *testing.T) {
 		assert.Len(t, entries, 2)
 	})
 
+	t.Run("5m cache cost uses the gap since the previous request", func(t *testing.T) {
+		cacheLine := func(ts time.Time, id string, read int) string {
+			return fmt.Sprintf(
+				`{"type":"assistant","timestamp":%q,"requestId":%q,"message":{"id":%q,"model":"claude-opus-5-5","usage":{"input_tokens":0,"output_tokens":1,"cache_creation_input_tokens":1000,"cache_read_input_tokens":%d,"cache_creation":{"ephemeral_1h_input_tokens":1000}}}}`,
+				ts.UTC().Format(time.RFC3339), id, id, read)
+		}
+		start := now.Add(-2 * time.Hour)
+		path := writeJSONL(t, dir, "gaps.jsonl",
+			cacheLine(start, "a", 0),
+			cacheLine(start.Add(10*time.Minute), "b", 10_000),
+			cacheLine(start.Add(12*time.Minute), "c", 10_000),
+		)
+
+		// Cutoff drops "a", but it still sets the gap before "b"
+		entries, err := readJSONLFileWithFilter(path, start.Add(time.Minute), nil, make([]byte, 1024), nil)
+		require.NoError(t, err)
+		require.Len(t, entries, 2)
+		// (11000*5 + 1*20) / 1M: the 10 minute gap would have expired a 5m cache
+		assert.InDelta(t, 0.05502, entries[0].CostUSD5mCache, 1e-12)
+		// (1000*5 + 10000*0.20 + 1*20) / 1M
+		assert.InDelta(t, 0.00702, entries[1].CostUSD5mCache, 1e-12)
+	})
+
 	t.Run("cutoff filtering", func(t *testing.T) {
 		path := writeJSONL(t, dir, "cutoff.jsonl",
 			entryLine(now.Add(-2*time.Hour), "msg_old", "req_old", 10, 5),

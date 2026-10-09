@@ -29,6 +29,10 @@ type RawEntry struct {
 			OutputTokens             int `json:"output_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			CacheCreation            struct {
+				Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+			} `json:"cache_creation"`
+			Speed string `json:"speed"`
 		} `json:"usage"`
 	} `json:"message"`
 }
@@ -64,15 +68,19 @@ func ParseJSONLLine(line []byte) (*models.UsageEntry, error) {
 		return nil, fmt.Errorf("timestamp parse error: %w", err)
 	}
 
+	usage := raw.Message.Usage
 	entry := &models.UsageEntry{
 		Timestamp:           timestamp,
-		InputTokens:         raw.Message.Usage.InputTokens,
-		OutputTokens:        raw.Message.Usage.OutputTokens,
-		CacheCreationTokens: raw.Message.Usage.CacheCreationInputTokens,
-		CacheReadTokens:     raw.Message.Usage.CacheReadInputTokens,
-		Model:               raw.Message.Model,
-		MessageID:           raw.Message.ID,
-		RequestID:           raw.RequestID,
+		InputTokens:         usage.InputTokens,
+		OutputTokens:        usage.OutputTokens,
+		CacheCreationTokens: usage.CacheCreationInputTokens,
+		// Capped at the total so a malformed split can't bill more writes than happened
+		CacheCreation1hTokens: min(usage.CacheCreation.Ephemeral1hInputTokens, usage.CacheCreationInputTokens),
+		CacheReadTokens:       usage.CacheReadInputTokens,
+		FastMode:              usage.Speed == "fast",
+		Model:                 raw.Message.Model,
+		MessageID:             raw.Message.ID,
+		RequestID:             raw.RequestID,
 	}
 
 	// Calculate cost

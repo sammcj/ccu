@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/sammcj/ccu/internal/analysis"
 	"github.com/sammcj/ccu/internal/models"
@@ -409,12 +410,63 @@ func TestGetSessionDistributionStringEmpty(t *testing.T) {
 	assert.Empty(t, getSessionDistributionString(&models.SessionBlock{}))
 }
 
+func TestSessionCache1hString(t *testing.T) {
+	base := time.Date(2025, 12, 3, 12, 30, 0, 0, time.UTC)
+	entries := []models.UsageEntry{
+		{Timestamp: base, Model: "claude-opus-5-5", InputTokens: 1, CacheCreationTokens: 1000, CacheCreation1hTokens: 900,
+			CostUSD: 1.0, CostUSD5mCache: 1.1},
+		{Timestamp: base.Add(time.Minute), Model: "claude-fable-5-1", InputTokens: 1, CacheCreationTokens: 1000, CacheCreation1hTokens: 800,
+			CostUSD: 1.0, CostUSD5mCache: 1.1},
+	}
+	blocks := analysis.CreateSessionBlocks(entries)
+	require.Len(t, blocks, 1)
+
+	got := sessionCache1hString(&blocks[0])
+	// The 1h cache cost $2.00 against $2.20 with the 5m cache
+	assert.Equal(t, "[1H Cache: 85% (-$0.20 vs 5m)]", ansi.Strip(got))
+	assert.Contains(t, got, lipgloss.NewStyle().Foreground(ColorMuted).Render("1H Cache"))
+	assert.Contains(t, got, cacheEfficiencyStyle(9.1).Render("-$0.20 vs 5m"))
+
+	worse := analysis.CreateSessionBlocks([]models.UsageEntry{
+		{Timestamp: base, Model: "claude-opus-5-5", CacheCreationTokens: 1000, CacheCreation1hTokens: 1000,
+			CostUSD: 11.0, CostUSD5mCache: 10.0},
+	})
+	assert.Equal(t, "[1H Cache: 100% (+$1.00 vs 5m)]", ansi.Strip(sessionCache1hString(&worse[0])),
+		"the 1h cache cost $1.00 more than the 5m cache")
+
+	unpriced := analysis.CreateSessionBlocks([]models.UsageEntry{
+		{Timestamp: base, Model: "claude-opus-5-5", CacheCreationTokens: 1000, CacheCreation1hTokens: 1000},
+	})
+	assert.Equal(t, "[1H Cache: 100%]", ansi.Strip(sessionCache1hString(&unpriced[0])), "no 5m comparison, no efficiency")
+
+	assert.Empty(t, sessionCache1hString(nil))
+	noWrites := analysis.CreateSessionBlocks([]models.UsageEntry{{Timestamp: base, Model: "claude-opus-5-5", InputTokens: 10}})
+	assert.Empty(t, sessionCache1hString(&noWrites[0]), "no cache writes means no share to show")
+}
+
+func TestCacheEfficiencyStyle(t *testing.T) {
+	tests := []struct {
+		percent float64
+		want    lipgloss.Color
+	}{
+		{9.1, ColorSuccess},
+		{0, ColorSuccess},
+		{-0.1, ColorPercent60},
+		{-4.9, ColorPercent60},
+		{-5, ColorPercent70},
+		{-30, ColorPercent70},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, cacheEfficiencyStyle(tt.percent).GetForeground(), "%.1f%%", tt.percent)
+	}
+}
+
 func TestRenderSessionCacheHitRate(t *testing.T) {
 	base := time.Date(2025, 12, 3, 12, 30, 0, 0, time.UTC)
 	const barWidth = 45
 
 	entries := []models.UsageEntry{
-		{Timestamp: base, Model: "claude-opus-4-5", InputTokens: 60, CacheCreationTokens: 200, CacheReadTokens: 400, CostUSD: 1.0},
+		{Timestamp: base, Model: "claude-opus-4-5", InputTokens: 60, CacheCreationTokens: 200, CacheCreation1hTokens: 200, CacheReadTokens: 400, CostUSD: 1.0},
 		{Timestamp: base.Add(5 * time.Minute), Model: "claude-sonnet-4", InputTokens: 40, CacheCreationTokens: 100, CacheReadTokens: 200, CostUSD: 0.5},
 	}
 	blocks := analysis.CreateSessionBlocks(entries)
@@ -425,9 +477,10 @@ func TestRenderSessionCacheHitRate(t *testing.T) {
 	// Token classes summed by hand from the entries above: the per-model
 	// aggregates must produce the same rendered line the entry loop did.
 	rate := analysis.CalculateCacheHitRate(100, 300, 600)
-	expected := renderCacheHitRateLine("Session - Cache Hit:", rate, barWidth)
+	expected := renderCacheHitRateLine("Session - Cache Hit:", rate, barWidth, sessionCache1hString(&blocks[0]))
 	assert.Equal(t, expected, got)
 	assert.Contains(t, got, "60.0%")
+	assert.Contains(t, ansi.Strip(got), "[1H Cache: 67%]", "the 1h cache share sits on the cache hit row")
 }
 
 func TestRenderSessionCacheHitRateNoActivity(t *testing.T) {
@@ -589,7 +642,7 @@ func TestRenderWeeklyCacheHitRate(t *testing.T) {
 
 	// Only the recent block counts: 500 cache reads / 1000 total = 50%.
 	rate := analysis.CalculateCacheHitRate(200, 300, 500)
-	expected := renderCacheHitRateLine("Weekly - Cache Hit:", rate, barWidth)
+	expected := renderCacheHitRateLine("Weekly - Cache Hit:", rate, barWidth, "")
 	assert.Equal(t, expected, got)
 	assert.Contains(t, got, "50.0%")
 }

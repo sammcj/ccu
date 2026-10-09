@@ -105,6 +105,46 @@ func TestCompareRateMismatch(t *testing.T) {
 	assert.Contains(t, report.Findings[0].Issue, "input rate is $5.00/M locally but $7.00/M upstream")
 }
 
+// TestCompareLongContextTier checks a prompt-length tier against LiteLLM's
+// "_above_<N>k_tokens" fields, so drift in the upper tier is caught too.
+func TestCompareLongContextTier(t *testing.T) {
+	fixture := `{
+		"claude-haiku-5-5": {
+			"input_cost_per_token": 0.0000001,
+			"output_cost_per_token": 0.0000005,
+			"input_cost_per_token_above_100k_tokens": 0.0000005,
+			"output_cost_per_token_above_100k_tokens": 0.000003,
+			"litellm_provider": "anthropic",
+			"mode": "chat"
+		}
+	}`
+	report, err := Compare([]byte(fixture))
+	require.NoError(t, err)
+
+	require.Len(t, report.Findings, 1)
+	assert.Equal(t, "claude-haiku-5-5", report.Findings[0].Model)
+	assert.Contains(t, report.Findings[0].Issue, "over-100k output rate is $2.50/M locally but $3.00/M upstream")
+}
+
+// TestCompareCacheWrite1h checks the derived 1-hour cache write rate (2x input)
+// against upstream, including on a long-context tier.
+func TestCompareCacheWrite1h(t *testing.T) {
+	fixture := `{
+		"claude-haiku-5-5": {
+			"input_cost_per_token": 0.0000001,
+			"cache_creation_input_token_cost_above_1hr": 0.0000003,
+			"cache_creation_input_token_cost_above_1hr_above_100k_tokens": 0.000001,
+			"litellm_provider": "anthropic",
+			"mode": "chat"
+		}
+	}`
+	report, err := Compare([]byte(fixture))
+	require.NoError(t, err)
+
+	require.Len(t, report.Findings, 1, "the matching upper-tier 1h rate is not flagged")
+	assert.Contains(t, report.Findings[0].Issue, "1h cache write rate is $0.20/M locally but $0.30/M upstream")
+}
+
 func TestCompareDedupesDatedVariants(t *testing.T) {
 	fixture := `{
 		"claude-opus-4-8": {

@@ -98,6 +98,60 @@ func TestParseJSONLLineValidEntry(t *testing.T) {
 	assert.Greater(t, entry.CostUSD, 0.0)
 	assert.Equal(t, 150, entry.DisplayTokens())
 	assert.Equal(t, 180, entry.TotalTokens())
+	assert.Zero(t, entry.CacheCreation1hTokens, "no split recorded means all writes are 5m")
+}
+
+// Claude Code records how cache writes split between the 5-minute and 1-hour
+// caches; 1-hour writes cost more, so the split must reach the entry.
+func TestParseJSONLLineCacheWriteSplit(t *testing.T) {
+	line := `{"type":"assistant","timestamp":"2026-07-03T10:00:00Z","requestId":"req_1","message":{"id":"msg_1","model":"claude-opus-5-5","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":1000,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":400,"ephemeral_1h_input_tokens":600}}}}`
+
+	entry, err := ParseJSONLLine([]byte(line))
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+
+	assert.Equal(t, 1000, entry.CacheCreationTokens, "total stays the total")
+	assert.Equal(t, 600, entry.CacheCreation1hTokens)
+	// (100*4 + 50*20 + 400*5 + 600*8) / 1M
+	assert.InDelta(t, 0.0082, entry.CostUSD, 1e-9)
+}
+
+func TestParseJSONLLineCacheWriteSplitEdgeCases(t *testing.T) {
+	const prefix = `{"type":"assistant","timestamp":"2026-07-03T10:00:00Z","requestId":"req_1","message":{"id":"msg_1","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":0,"cache_creation_input_tokens":100,"cache_read_input_tokens":0,`
+
+	t.Run("1h split larger than the total is capped", func(t *testing.T) {
+		entry, err := ParseJSONLLine([]byte(prefix + `"cache_creation":{"ephemeral_1h_input_tokens":500}}}}`))
+		require.NoError(t, err)
+		require.NotNil(t, entry)
+		assert.Equal(t, 100, entry.CacheCreation1hTokens)
+		// (1*4 + 100*8) / 1M - no negative 5m writes
+		assert.InDelta(t, 0.000804, entry.CostUSD, 1e-12)
+	})
+
+	t.Run("null split means all writes are 5m", func(t *testing.T) {
+		entry, err := ParseJSONLLine([]byte(prefix + `"cache_creation":null}}}`))
+		require.NoError(t, err)
+		require.NotNil(t, entry)
+		assert.Zero(t, entry.CacheCreation1hTokens)
+		// (1*4 + 100*5) / 1M
+		assert.InDelta(t, 0.000504, entry.CostUSD, 1e-12)
+	})
+}
+
+func TestParseJSONLLineFastMode(t *testing.T) {
+	const prefix = `{"type":"assistant","timestamp":"2026-07-03T10:00:00Z","requestId":"req_1","message":{"id":"msg_1","model":"claude-opus-5-5","usage":{"input_tokens":1000,"output_tokens":0`
+
+	fast, err := ParseJSONLLine([]byte(prefix + `,"speed":"fast"}}}`))
+	require.NoError(t, err)
+	require.NotNil(t, fast)
+	assert.True(t, fast.FastMode)
+	assert.InDelta(t, 0.008, fast.CostUSD, 1e-12)
+
+	standard, err := ParseJSONLLine([]byte(prefix + `,"speed":"standard"}}}`))
+	require.NoError(t, err)
+	require.NotNil(t, standard)
+	assert.False(t, standard.FastMode)
+	assert.InDelta(t, 0.004, standard.CostUSD, 1e-12)
 }
 
 func TestParseJSONLLineTimestampFormats(t *testing.T) {

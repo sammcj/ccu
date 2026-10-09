@@ -33,13 +33,14 @@ const tolerance = 0.001
 var ancientPrefixes = []string{"claude-2", "claude-instant"}
 
 type upstreamModel struct {
-	InputCostPerToken         float64 `json:"input_cost_per_token"`
-	OutputCostPerToken        float64 `json:"output_cost_per_token"`
-	CacheCreationCostPerToken float64 `json:"cache_creation_input_token_cost"`
-	CacheReadCostPerToken     float64 `json:"cache_read_input_token_cost"`
-	Provider                  string  `json:"litellm_provider"`
-	Mode                      string  `json:"mode"`
-	DeprecationDate           string  `json:"deprecation_date"`
+	InputCostPerToken           float64 `json:"input_cost_per_token"`
+	OutputCostPerToken          float64 `json:"output_cost_per_token"`
+	CacheCreationCostPerToken   float64 `json:"cache_creation_input_token_cost"`
+	CacheReadCostPerToken       float64 `json:"cache_read_input_token_cost"`
+	CacheCreation1hCostPerToken float64 `json:"cache_creation_input_token_cost_above_1hr"`
+	Provider                    string  `json:"litellm_provider"`
+	Mode                        string  `json:"mode"`
+	DeprecationDate             string  `json:"deprecation_date"`
 }
 
 // Finding describes one way ccu's tables disagree with upstream.
@@ -119,6 +120,9 @@ func Compare(data []byte) (*Report, error) {
 				fmt.Sprintf("no pricing entry (silently billed at the Sonnet fallback rate); upstream model %q", name))
 		} else {
 			comparePricing(report, seen, normalised, name, local, um)
+			if local.LongContext != nil {
+				compareLongContext(report, seen, normalised, name, local, raw[id])
+			}
 		}
 
 		if ui.FormatModelNameSimple(name) == name {
@@ -165,18 +169,52 @@ func comparePricing(report *Report, seen map[string]bool, normalised, upstreamID
 		{"output", local.Output, um.OutputCostPerToken},
 		{"cache write", local.CacheCreation, um.CacheCreationCostPerToken},
 		{"cache read", local.CacheRead, um.CacheReadCostPerToken},
+		{"1h cache write", local.CacheCreation1h(), um.CacheCreation1hCostPerToken},
 	}
 
 	for _, r := range rates {
-		upstreamPerM := r.upstream * 1_000_000
-		if upstreamPerM == 0 {
-			continue
-		}
-		if math.Abs(upstreamPerM-r.local) > tolerance {
-			addFinding(report, seen, normalised, "rate-"+r.label,
-				fmt.Sprintf("%s rate is $%.2f/M locally but $%.2f/M upstream (model %q)",
-					r.label, r.local, upstreamPerM, upstreamID))
-		}
+		compareRate(report, seen, normalised, upstreamID, r.label, r.local, r.upstream)
+	}
+}
+
+// compareLongContext checks a prompt-length tier's upper rates against
+// LiteLLM's "<field>_above_<N>k_tokens" variants, which vary by threshold and
+// so are read from the raw entry.
+func compareLongContext(report *Report, seen map[string]bool, normalised, upstreamID string, local pricing.Pricing, entry json.RawMessage) {
+	var fields map[string]any
+	if err := json.Unmarshal(entry, &fields); err != nil {
+		return
+	}
+	k := local.LongContextThreshold / 1000
+	suffix := fmt.Sprintf("_above_%dk_tokens", k)
+	upper := local.LongContext
+	rates := []struct {
+		label, field string
+		local        float64
+	}{
+		{"input", "input_cost_per_token", upper.Input},
+		{"output", "output_cost_per_token", upper.Output},
+		{"cache write", "cache_creation_input_token_cost", upper.CacheCreation},
+		{"cache read", "cache_read_input_token_cost", upper.CacheRead},
+		{"1h cache write", "cache_creation_input_token_cost_above_1hr", upper.CacheCreation1h()},
+	}
+	for _, r := range rates {
+		upstream, _ := fields[r.field+suffix].(float64)
+		compareRate(report, seen, normalised, upstreamID, fmt.Sprintf("over-%dk %s", k, r.label), r.local, upstream)
+	}
+}
+
+// compareRate flags one rate that differs from upstream. Upstream zero values
+// are skipped: they mean the dataset is missing the field, not that it's free.
+func compareRate(report *Report, seen map[string]bool, normalised, upstreamID, label string, local, upstreamPerToken float64) {
+	upstreamPerM := upstreamPerToken * 1_000_000
+	if upstreamPerM == 0 {
+		return
+	}
+	if math.Abs(upstreamPerM-local) > tolerance {
+		addFinding(report, seen, normalised, "rate-"+label,
+			fmt.Sprintf("%s rate is $%.2f/M locally but $%.2f/M upstream (model %q)",
+				label, local, upstreamPerM, upstreamID))
 	}
 }
 

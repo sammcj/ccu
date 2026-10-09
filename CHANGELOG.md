@@ -6,6 +6,24 @@
 
 ### Added
 
+- Pricing for Sonnet 5.5 ($2 input, $10 output, $0.10 cache read) and Haiku 5.5 ($0.10 input, $0.50 output, $0.01 cache read)
+- Prompt-length pricing tiers. A Haiku 5.5 request whose prompt (input plus cache write and cache read tokens) is over 100,000 tokens is costed at the higher rates ($0.50 input, $2.50 output), per request. Tiers on Anthropic's pricing page are read the same way
+- `Session - Cache Hit` row shows the share of the session's cache writes that went to the 1-hour cache, and what the session cost against the 5-minute cache, e.g. `[1H Cache: 100% (+$11.75 vs 5m)]`. The comparison replays each conversation under a 5-minute cache: a cache read more than 5 minutes (and at most an hour) after the previous request is costed as a rewrite. Green when the 1-hour cache paid off, amber when the 5-minute cache would have been up to 5% cheaper, orange beyond that
+
+### Changed
+
+- The built-in fallbacks for unversioned `sonnet` and `haiku` are now the 5.5 releases, used until ccu has read the pricing page
+- Unknown Sonnet and Haiku versions are estimated at their family's 5.5 rates
+
+### Fixed
+
+- 1-hour cache writes are costed at 2x the input rate. Every cache write was costed at the 5-minute rate (1.25x), but Claude Code writes most of its cache to the 1-hour tier, so costs read low (16.6% over a sample 30 days). The split comes from each response's `usage.cache_creation`; entries without it are costed as 5-minute writes
+- Fast mode requests (`usage.speed: "fast"`) are costed at the fast mode premium, 2x every rate on Opus 5.5, Opus 5 and Opus 4.8. They were costed at standard rates. Models priced from Anthropic's pricing page take their premium from its fast mode table
+
+## [0.2.16] - 2026-10-09
+
+### Added
+
 - Pricing for Opus 5.5 ($4 input, $20 output, $0.20 cache read per million tokens). It previously fell back to Opus family rates with a warning
 - Models missing from the built-in pricing table are priced from Anthropic's pricing page, cached for 24 hours. Family rates remain the fallback when the page is unreachable or doesn't list the model
 - Per-model weekly limits (Fable and any other `weekly_scoped` limit) now get a depletion prediction on the same terms as the All Models weekly limit. The prediction line shows `Weekly Fable limit: <time>` when the model's cap will be hit before its own reset, and the API's `weekly.scoped[*]` entries gain `limit_at`, `limit_in_seconds` and `will_hit_limit`

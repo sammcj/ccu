@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sammcj/ccu/internal/models"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestCalculateCost(t *testing.T) {
@@ -109,6 +110,107 @@ func TestCalculateCost(t *testing.T) {
 			want: 0.0189,
 		},
 		{
+			name: "sonnet 5.5",
+			entry: models.UsageEntry{
+				Timestamp:           time.Now(),
+				InputTokens:         1000,
+				OutputTokens:        500,
+				CacheCreationTokens: 200,
+				CacheReadTokens:     300,
+				Model:               "claude-sonnet-5-5",
+			},
+			// Cache reads are 0.05x input. (1000*2 + 500*10 + 200*2.5 + 300*0.1) / 1M
+			want: 0.00753,
+		},
+		{
+			name: "haiku 5.5 prompt up to 100k",
+			entry: models.UsageEntry{
+				Timestamp:           time.Now(),
+				InputTokens:         1000,
+				OutputTokens:        500,
+				CacheCreationTokens: 200,
+				CacheReadTokens:     300,
+				Model:               "claude-haiku-5-5",
+			},
+			// (1000*0.10 + 500*0.50 + 200*0.125 + 300*0.01) / 1M
+			want: 0.000378,
+		},
+		{
+			name: "haiku 5.5 prompt of exactly 100k stays on the lower rate",
+			entry: models.UsageEntry{
+				Timestamp:   time.Now(),
+				InputTokens: 100_000,
+				Model:       "claude-haiku-5-5",
+			},
+			want: 0.01,
+		},
+		{
+			// Prompt length counts cache reads and writes, so a mostly cached
+			// prompt still crosses the threshold.
+			name: "haiku 5.5 prompt over 100k",
+			entry: models.UsageEntry{
+				Timestamp:       time.Now(),
+				InputTokens:     1000,
+				OutputTokens:    500,
+				CacheReadTokens: 100_000,
+				Model:           "claude-haiku-5-5",
+			},
+			// (1000*0.50 + 500*2.50 + 100000*0.05) / 1M
+			want: 0.00675,
+		},
+		{
+			// 1-hour cache writes cost 2x input; 5-minute writes 1.25x
+			name: "opus 5.5 with 1h cache writes",
+			entry: models.UsageEntry{
+				Timestamp:             time.Now(),
+				CacheCreationTokens:   1000,
+				CacheCreation1hTokens: 600,
+				Model:                 "claude-opus-5-5",
+			},
+			// (400*5 + 600*8) / 1M
+			want: 0.0068,
+		},
+		{
+			name: "haiku 5.5 over 100k with 1h cache writes uses the upper tier's 1h rate",
+			entry: models.UsageEntry{
+				Timestamp:             time.Now(),
+				InputTokens:           1000,
+				CacheCreationTokens:   200_000,
+				CacheCreation1hTokens: 200_000,
+				Model:                 "claude-haiku-5-5",
+			},
+			// (1000*0.50 + 200000*1.00) / 1M
+			want: 0.2005,
+		},
+		{
+			// Fast mode doubles every rate, cache multipliers included
+			name: "opus 5.5 fast mode",
+			entry: models.UsageEntry{
+				Timestamp:             time.Now(),
+				InputTokens:           1000,
+				OutputTokens:          500,
+				CacheCreationTokens:   1000,
+				CacheCreation1hTokens: 600,
+				CacheReadTokens:       10_000,
+				FastMode:              true,
+				Model:                 "claude-opus-5-5",
+			},
+			// (1000*8 + 500*40 + 400*10 + 600*16 + 10000*0.40) / 1M
+			want: 0.0456,
+		},
+		{
+			// Opus 4.6 has no fast mode; its fast requests bill at standard rates
+			name: "opus 4.6 fast mode",
+			entry: models.UsageEntry{
+				Timestamp:    time.Now(),
+				InputTokens:  1000,
+				OutputTokens: 500,
+				FastMode:     true,
+				Model:        "claude-opus-4-6",
+			},
+			want: 0.0175,
+		},
+		{
 			name: "opus 5 with 1m context suffix",
 			entry: models.UsageEntry{
 				Timestamp:    time.Now(),
@@ -160,6 +262,17 @@ func TestCalculateCost(t *testing.T) {
 			// (1000 * 15 / 1M) + (500 * 75 / 1M) = 0.015 + 0.0375 = 0.0525
 			want: 0.0525,
 		},
+		{
+			name: "claude 3 haiku",
+			entry: models.UsageEntry{
+				Timestamp:    time.Now(),
+				InputTokens:  10000,
+				OutputTokens: 5000,
+				Model:        "claude-3-haiku",
+			},
+			// (10000 * 0.25 / 1M) + (5000 * 1.25 / 1M) = 0.0025 + 0.00625 = 0.00875
+			want: 0.00875,
+		},
 	}
 
 	for _, tt := range tests {
@@ -168,36 +281,6 @@ func TestCalculateCost(t *testing.T) {
 			// Allow small floating point differences
 			if diff := got - tt.want; diff > 0.0001 || diff < -0.0001 {
 				t.Errorf("CalculateCost() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestCalculateCostForTokens(t *testing.T) {
-	tests := []struct {
-		name          string
-		model         string
-		input         int
-		output        int
-		cacheCreation int
-		cacheRead     int
-		want          float64
-	}{
-		{
-			name:   "haiku basic",
-			model:  "claude-3-haiku",
-			input:  10000,
-			output: 5000,
-			// (10000 * 0.25 / 1M) + (5000 * 1.25 / 1M) = 0.0025 + 0.00625 = 0.00875
-			want: 0.00875,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := CalculateCostForTokens(tt.model, tt.input, tt.output, tt.cacheCreation, tt.cacheRead)
-			if diff := got - tt.want; diff > 0.0001 || diff < -0.0001 {
-				t.Errorf("CalculateCostForTokens() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -275,9 +358,7 @@ func TestLookupFallbackLadder(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, source := Lookup(tt.model)
-			if got != tt.want {
-				t.Errorf("Lookup(%q) = %+v, want %+v", tt.model, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "Lookup(%q)", tt.model)
 			if source != tt.wantSource {
 				t.Errorf("Lookup(%q) source = %v, want %v", tt.model, source, tt.wantSource)
 			}
@@ -300,18 +381,39 @@ func TestEveryFamilyHasFallbackPricing(t *testing.T) {
 // newest version's entry when a release reprices a family. The UI tells the user
 // a future version is costed at the family's current rate, so it must be. A bare
 // family name normalises to its latest release, which keeps latestFamilyVersion
-// private. Sonnet is skipped: its 5 entry is a promotional rate the family
-// deliberately does not inherit.
+// private.
+func TestCostWith5mCache(t *testing.T) {
+	// Opus 5.5: input $4, 5m write $5, 1h write $8, read $0.20
+	entry := models.UsageEntry{
+		Model:                 "claude-opus-5-5",
+		CacheCreationTokens:   1000,
+		CacheCreation1hTokens: 1000,
+		CacheReadTokens:       10_000,
+	}
+	tests := []struct {
+		name string
+		gap  time.Duration
+		want float64
+	}{
+		// (1000*5 + 10000*0.20) / 1M
+		{"read within 5m stays a read", 4 * time.Minute, 0.007},
+		// (11000*5) / 1M: only the 1h cache kept this prefix alive
+		{"read after 5m is rewritten", 10 * time.Minute, 0.055},
+		{"read after 1h came from elsewhere", 2 * time.Hour, 0.007},
+		{"first request in a conversation", 0, 0.007},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.InDelta(t, tt.want, CostWith5mCache(entry, tt.gap), 1e-12)
+		})
+	}
+}
+
 func TestFamilyPricingMatchesLatestRelease(t *testing.T) {
 	for _, family := range models.ModelFamilies {
-		if family == "sonnet" {
-			continue
-		}
 		latest := models.NormaliseModelName(family)
-		if FamilyPricing[family] != ModelPricing[latest] {
-			t.Errorf("FamilyPricing[%q] = %+v, but latest release %s is %+v",
-				family, FamilyPricing[family], latest, ModelPricing[latest])
-		}
+		assert.Equal(t, ModelPricing[latest], FamilyPricing[family],
+			"FamilyPricing[%q] should match latest release %s", family, latest)
 	}
 }
 

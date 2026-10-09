@@ -15,11 +15,19 @@ type UsageEntry struct {
 	InputTokens         int       `json:"input_tokens"`
 	OutputTokens        int       `json:"output_tokens"`
 	CacheCreationTokens int       `json:"cache_creation_input_tokens"`
-	CacheReadTokens     int       `json:"cache_read_input_tokens"`
-	CostUSD             float64   `json:"cost_usd"`
-	Model               string    `json:"model"`
-	MessageID           string    `json:"message_id"`
-	RequestID           string    `json:"request_id"`
+	// CacheCreation1hTokens is the part of CacheCreationTokens written to the
+	// 1-hour cache, which costs more than the 5-minute cache.
+	CacheCreation1hTokens int `json:"cache_creation_1h_input_tokens"`
+	CacheReadTokens       int `json:"cache_read_input_tokens"`
+	// FastMode marks a request served in fast mode, which bills at a premium
+	FastMode bool    `json:"fast_mode"`
+	CostUSD  float64 `json:"cost_usd"`
+	// CostUSD5mCache is what the request would have cost had Claude Code used
+	// only the 5-minute cache, to measure whether the 1-hour cache paid off.
+	CostUSD5mCache float64 `json:"cost_usd_5m_cache"`
+	Model          string  `json:"model"`
+	MessageID      string  `json:"message_id"`
+	RequestID      string  `json:"request_id"`
 }
 
 // TotalTokens returns the sum of all token types
@@ -58,8 +66,8 @@ var latestFamilyVersion = map[string]string{
 	"fable":  "5-1",
 	"mythos": "5-1",
 	"opus":   "5-5",
-	"sonnet": "5",
-	"haiku":  "4-5",
+	"sonnet": "5-5",
+	"haiku":  "5-5",
 }
 
 // latestMu guards latestFamilyVersion, which AdoptNewerVersions writes while
@@ -181,12 +189,14 @@ func FamilyOf(model string) string {
 
 // ModelStats tracks per-model statistics
 type ModelStats struct {
-	InputTokens         int
-	OutputTokens        int
-	CacheCreationTokens int
-	CacheReadTokens     int
-	CostUSD             float64
-	MessageCount        int
+	InputTokens           int
+	OutputTokens          int
+	CacheCreationTokens   int
+	CacheCreation1hTokens int
+	CacheReadTokens       int
+	CostUSD               float64
+	CostUSD5mCache        float64
+	MessageCount          int
 }
 
 // TotalTokens returns sum of all token types for this model

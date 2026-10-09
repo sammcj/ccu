@@ -1,7 +1,6 @@
 package models
 
 import (
-	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -95,8 +94,8 @@ func TestNormaliseModelName(t *testing.T) {
 		// Claude Code writes these into some JSONL entries; resolving them to an
 		// older generation would price current usage at a retired model's rate.
 		{"opus", "claude-opus-5-5"},
-		{"sonnet", "claude-sonnet-5"},
-		{"haiku", "claude-haiku-4-5"},
+		{"sonnet", "claude-sonnet-5-5"},
+		{"haiku", "claude-haiku-5-5"},
 		{"fable", "claude-fable-5-1"},
 		{"mythos", "claude-mythos-5-1"},
 
@@ -172,19 +171,22 @@ func TestEveryFamilyHasALatestVersion(t *testing.T) {
 }
 
 func TestAdoptNewerVersions(t *testing.T) {
-	orig := maps.Clone(latestFamilyVersion)
+	orig := latestFamilyVersion
 	t.Cleanup(func() {
 		latestMu.Lock()
 		latestFamilyVersion = orig
 		latestMu.Unlock()
 	})
-	builtinOpus := NormaliseModelName("opus")
+	// Fixed starting point so bumping the built-in floors doesn't change this test
+	latestMu.Lock()
+	latestFamilyVersion = map[string]string{"opus": "5-5", "sonnet": "5", "haiku": "4-5"}
+	latestMu.Unlock()
 
 	AdoptNewerVersions([]string{
 		"claude-sonnet-5-5", "claude-sonnet-4-6", "claude-3-5-haiku", "claude-opus-4", "gpt-5",
 	})
 	assert.Equal(t, "claude-sonnet-5-5", NormaliseModelName("sonnet"), "newer release adopted")
-	assert.Equal(t, builtinOpus, NormaliseModelName("opus"), "older release never lowers the latest")
+	assert.Equal(t, "claude-opus-5-5", NormaliseModelName("opus"), "older release never lowers the latest")
 	assert.Equal(t, "claude-haiku-4-5", NormaliseModelName("haiku"), "claude 3 era versions compare by number")
 
 	AdoptNewerVersions([]string{"claude-sonnet-5"})
