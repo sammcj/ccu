@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The 1H Cache comparison on the `Session - Cache Hit` row includes the session cost so far, so the difference has a scale: `[1H Cache: 100% (+$3.93 of $98.12 vs 5m)]`
+
+## [0.2.17] - 2026-10-09
+
 ### Added
 
 - Pricing for Sonnet 5.5 ($2 input, $10 output, $0.10 cache read) and Haiku 5.5 ($0.10 input, $0.50 output, $0.01 cache read)

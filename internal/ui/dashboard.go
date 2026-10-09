@@ -276,7 +276,7 @@ func getSessionDistributionString(session *models.SessionBlock) string {
 
 // sessionCache1hString returns the share of the session's cache writes that
 // went to the 1-hour cache, and what the session cost against the 5-minute
-// cache: "[1H Cache: 100% (+$11.75 vs 5m)]". It returns "" with no cache
+// cache: "[1H Cache: 100% (+$11.75 of $124.72 vs 5m)]". It returns "" with no cache
 // writes, and leaves out the comparison with no 1-hour writes to judge.
 func sessionCache1hString(session *models.SessionBlock) string {
 	if session == nil {
@@ -303,7 +303,7 @@ func sessionCache1hString(session *models.SessionBlock) string {
 			sign = "-"
 		}
 		style := cacheEfficiencyStyle(-extra / cost5m * 100)
-		out += " (" + style.Render(fmt.Sprintf("%s$%.2f vs 5m", sign, math.Abs(extra))) + ")"
+		out += fmt.Sprintf(" (%s of $%.2f vs 5m)", style.Render(fmt.Sprintf("%s$%.2f", sign, math.Abs(extra))), cost)
 	}
 	return "[" + out + "]"
 }

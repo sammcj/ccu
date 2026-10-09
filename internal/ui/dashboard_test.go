@@ -423,15 +423,15 @@ func TestSessionCache1hString(t *testing.T) {
 
 	got := sessionCache1hString(&blocks[0])
 	// The 1h cache cost $2.00 against $2.20 with the 5m cache
-	assert.Equal(t, "[1H Cache: 85% (-$0.20 vs 5m)]", ansi.Strip(got))
+	assert.Equal(t, "[1H Cache: 85% (-$0.20 of $2.00 vs 5m)]", ansi.Strip(got))
 	assert.Contains(t, got, lipgloss.NewStyle().Foreground(ColorMuted).Render("1H Cache"))
-	assert.Contains(t, got, cacheEfficiencyStyle(9.1).Render("-$0.20 vs 5m"))
+	assert.Contains(t, got, cacheEfficiencyStyle(9.1).Render("-$0.20"))
 
 	worse := analysis.CreateSessionBlocks([]models.UsageEntry{
 		{Timestamp: base, Model: "claude-opus-5-5", CacheCreationTokens: 1000, CacheCreation1hTokens: 1000,
 			CostUSD: 11.0, CostUSD5mCache: 10.0},
 	})
-	assert.Equal(t, "[1H Cache: 100% (+$1.00 vs 5m)]", ansi.Strip(sessionCache1hString(&worse[0])),
+	assert.Equal(t, "[1H Cache: 100% (+$1.00 of $11.00 vs 5m)]", ansi.Strip(sessionCache1hString(&worse[0])),
 		"the 1h cache cost $1.00 more than the 5m cache")
 
 	unpriced := analysis.CreateSessionBlocks([]models.UsageEntry{
