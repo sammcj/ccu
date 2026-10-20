@@ -18,19 +18,19 @@ A performant terminal dashboard for monitoring Claude Code usage, built in Go us
 
 ## Installation
 
-### From Source
-
-```bash
-git clone <repository>
-cd ccu
-make build
-./bin/ccu
-```
-
 ### Using Go Install
 
 ```bash
-go install ./cmd/ccu
+go install github.com/sammcj/ccu/cmd/ccu@latest
+```
+
+### From Source
+
+```bash
+git clone https://github.com/sammcj/ccu.git
+cd ccu
+make build
+./bin/ccu
 ```
 
 ## Usage
