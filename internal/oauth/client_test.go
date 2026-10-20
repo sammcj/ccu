@@ -572,9 +572,9 @@ func TestTokenExpiredErrorMessage(t *testing.T) {
 		contains string
 	}{
 		{
-			name:     "env token points at setup-token",
+			name:     "env token points at a Keychain login",
 			err:      &TokenExpiredError{Source: envOAuthToken},
-			contains: "claude setup-token",
+			contains: "claude logout && claude login",
 		},
 		{
 			name:     "alt auth explains why the keychain token is stale",
@@ -643,12 +643,12 @@ func TestFetchUsageAuthHandling(t *testing.T) {
 			wantErr:      ErrEnvTokenScope,
 		},
 		{
-			name:         "env token 401 points at setup-token",
+			name:         "env token 401 points at a Keychain login",
 			creds:        credentials{token: &ClaudeAiOAuth{AccessToken: "env"}, source: envOAuthToken},
 			status:       http.StatusUnauthorized,
 			wantRequests: 1,
 			wantErr:      ErrTokenExpired,
-			wantMsg:      "claude setup-token",
+			wantMsg:      "claude logout && claude login",
 		},
 		{
 			name:         "env token with user:profile returns usage",

@@ -64,7 +64,8 @@ type TokenExpiredError struct {
 func (e *TokenExpiredError) Error() string {
 	switch {
 	case e.Source == envOAuthToken:
-		return envOAuthToken + " was rejected (expired or revoked) - run 'claude setup-token' for a new one"
+		// A fresh setup-token would only hit the 403 scope gap, so point at a Keychain login
+		return envOAuthToken + " was rejected (expired or revoked) - run 'claude logout && claude login' so ccu can use the Keychain token"
 	case e.AltAuth != "":
 		return fmt.Sprintf("Keychain token expired; %s is set so Claude Code isn't refreshing it (no plan limits to show)", e.AltAuth)
 	case !e.ExpiresAt.IsZero():
