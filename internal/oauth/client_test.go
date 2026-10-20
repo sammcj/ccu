@@ -1,12 +1,16 @@
 package oauth
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // skipIfNotMacOS skips the test if not running on macOS
@@ -260,10 +264,10 @@ func TestGetRetryAfter(t *testing.T) {
 }
 
 func TestIsAvailableCaching(t *testing.T) {
-	origCheck := checkKeychain
+	origCheck := checkCredentials
 	t.Cleanup(func() {
 		availabilityMu.Lock()
-		checkKeychain = origCheck
+		checkCredentials = origCheck
 		availabilityAt = time.Time{}
 		availabilityMu.Unlock()
 	})
@@ -279,7 +283,7 @@ func TestIsAvailableCaching(t *testing.T) {
 	}
 
 	calls := 0
-	checkKeychain = func() bool {
+	checkCredentials = func() bool {
 		calls++
 		return true
 	}
@@ -290,7 +294,7 @@ func TestIsAvailableCaching(t *testing.T) {
 	assert.Equal(t, 1, calls, "second call within TTL should not re-check the keychain")
 
 	// Expire the cache and flip the underlying result
-	checkKeychain = func() bool {
+	checkCredentials = func() bool {
 		calls++
 		return false
 	}
@@ -325,6 +329,16 @@ func TestRequiresUserAction(t *testing.T) {
 			name:     "wrapped missing scope is still detected",
 			err:      fmt.Errorf("failed to retrieve OAuth credentials: %w", ErrMissingScope),
 			expected: true,
+		},
+		{
+			name:     "setup-token scope error auto-retries so a fresh Keychain login is picked up",
+			err:      ErrEnvTokenScope,
+			expected: false,
+		},
+		{
+			name:     "expired keychain token auto-retries",
+			err:      &TokenExpiredError{Source: sourceKeychain, AltAuth: "ANTHROPIC_API_KEY"},
+			expected: false,
 		},
 		{
 			name:     "rate limit error does not require user action",
@@ -435,6 +449,242 @@ func TestEffectiveFiveHour(t *testing.T) {
 			if !tt.wantResetsAt.IsZero() {
 				assert.True(t, resetsAt.Equal(tt.wantResetsAt),
 					"resetsAt = %v, want %v", resetsAt, tt.wantResetsAt)
+			}
+		})
+	}
+}
+
+func fakeEnv(vars map[string]string) func(string) string {
+	return func(name string) string { return vars[name] }
+}
+
+func TestResolveCredentials(t *testing.T) {
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	fresh := &ClaudeAiOAuth{AccessToken: "kc-fresh", ExpiresAt: now.Add(time.Hour).UnixMilli()}
+	stale := &ClaudeAiOAuth{AccessToken: "kc-stale", ExpiresAt: now.Add(-time.Hour).UnixMilli()}
+	errNoEntry := errors.New("keychain access failed")
+	keychain := func(c *ClaudeAiOAuth, err error) func() (*ClaudeAiOAuth, error) {
+		return func() (*ClaudeAiOAuth, error) { return c, err }
+	}
+
+	tests := []struct {
+		name        string
+		keychain    func() (*ClaudeAiOAuth, error)
+		env         map[string]string
+		wantToken   string
+		wantSource  string
+		wantAltAuth string
+		wantErr     error
+	}{
+		{
+			name:       "fresh keychain token with no env",
+			keychain:   keychain(fresh, nil),
+			wantToken:  "kc-fresh",
+			wantSource: sourceKeychain,
+		},
+		{
+			name:     "API-key-only user without a keychain entry gets the keychain error",
+			keychain: keychain(nil, errNoEntry),
+			env:      map[string]string{"ANTHROPIC_API_KEY": "sk-test"},
+			wantErr:  errNoEntry,
+		},
+		{
+			name:        "fresh keychain token wins over env token",
+			keychain:    keychain(fresh, nil),
+			env:         map[string]string{envOAuthToken: "env-tok", "ANTHROPIC_API_KEY": "sk-test"},
+			wantToken:   "kc-fresh",
+			wantSource:  sourceKeychain,
+			wantAltAuth: "ANTHROPIC_API_KEY",
+		},
+		{
+			name:       "expired keychain token falls back to env token",
+			keychain:   keychain(stale, nil),
+			env:        map[string]string{envOAuthToken: "env-tok"},
+			wantToken:  "env-tok",
+			wantSource: envOAuthToken,
+		},
+		{
+			name:       "missing keychain entry falls back to env token",
+			keychain:   keychain(nil, errors.New("keychain access failed")),
+			env:        map[string]string{envOAuthToken: " env-tok\n"},
+			wantToken:  "env-tok",
+			wantSource: envOAuthToken,
+		},
+		{
+			name:     "keychain error surfaces when no env token is set",
+			keychain: keychain(nil, ErrMissingScope),
+			env:      map[string]string{envOAuthToken: "   "},
+			wantErr:  ErrMissingScope,
+		},
+		{
+			name:        "expired keychain token is kept when nothing else exists",
+			keychain:    keychain(stale, nil),
+			env:         map[string]string{"ANTHROPIC_API_KEY": "sk-test"},
+			wantToken:   "kc-stale",
+			wantSource:  sourceKeychain,
+			wantAltAuth: "ANTHROPIC_API_KEY",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveCredentials(tt.keychain, fakeEnv(tt.env), now)
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantToken, got.token.AccessToken)
+			assert.Equal(t, tt.wantSource, got.source)
+			assert.Equal(t, tt.wantAltAuth, got.altAuth)
+		})
+	}
+}
+
+func TestAltAuthEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{name: "nothing set", env: nil, want: ""},
+		{name: "api key", env: map[string]string{"ANTHROPIC_API_KEY": "sk-test"}, want: "ANTHROPIC_API_KEY"},
+		{name: "disabled flag ignored", env: map[string]string{"CLAUDE_CODE_USE_BEDROCK": "0"}, want: ""},
+		{name: "false flag ignored", env: map[string]string{"CLAUDE_CODE_USE_VERTEX": "False"}, want: ""},
+		{
+			name: "follows Claude Code precedence",
+			env:  map[string]string{"ANTHROPIC_API_KEY": "sk-test", "CLAUDE_CODE_USE_BEDROCK": "1"},
+			want: "CLAUDE_CODE_USE_BEDROCK",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, altAuthEnv(fakeEnv(tt.env)))
+		})
+	}
+}
+
+func TestTokenExpiredErrorMessage(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      *TokenExpiredError
+		contains string
+	}{
+		{
+			name:     "env token points at setup-token",
+			err:      &TokenExpiredError{Source: envOAuthToken},
+			contains: "claude setup-token",
+		},
+		{
+			name:     "alt auth explains why the keychain token is stale",
+			err:      &TokenExpiredError{Source: sourceKeychain, AltAuth: "ANTHROPIC_API_KEY"},
+			contains: "ANTHROPIC_API_KEY is set so Claude Code isn't refreshing it",
+		},
+		{
+			name:     "known expiry is shown",
+			err:      &TokenExpiredError{Source: sourceKeychain, ExpiresAt: time.Date(2026, 10, 20, 9, 0, 0, 0, time.Local)},
+			contains: "expired 20 Oct 09:00",
+		},
+		{
+			name:     "unknown expiry falls back to the generic message",
+			err:      &TokenExpiredError{Source: sourceKeychain},
+			contains: ErrTokenExpired.Error(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Contains(t, tt.err.Error(), tt.contains)
+			assert.ErrorIs(t, tt.err, ErrTokenExpired, "must stay on the auto-retry path")
+		})
+	}
+}
+
+func TestFetchUsageAuthHandling(t *testing.T) {
+	future := time.Now().Add(time.Hour).UnixMilli()
+	past := time.Now().Add(-time.Hour).UnixMilli()
+
+	tests := []struct {
+		name         string
+		creds        credentials
+		status       int
+		wantRequests int
+		wantErr      error
+		wantMsg      string
+	}{
+		{
+			name:         "expired keychain token skips the request",
+			creds:        credentials{token: &ClaudeAiOAuth{AccessToken: "kc", ExpiresAt: past}, source: sourceKeychain, altAuth: "ANTHROPIC_API_KEY"},
+			wantRequests: 0,
+			wantErr:      ErrTokenExpired,
+			wantMsg:      "ANTHROPIC_API_KEY is set",
+		},
+		{
+			name:         "keychain 401 is token expiry",
+			creds:        credentials{token: &ClaudeAiOAuth{AccessToken: "kc", ExpiresAt: future}, source: sourceKeychain},
+			status:       http.StatusUnauthorized,
+			wantRequests: 1,
+			wantErr:      ErrTokenExpired,
+		},
+		{
+			name:         "revoked keychain token doesn't blame the API key",
+			creds:        credentials{token: &ClaudeAiOAuth{AccessToken: "kc", ExpiresAt: future}, source: sourceKeychain, altAuth: "ANTHROPIC_API_KEY"},
+			status:       http.StatusUnauthorized,
+			wantRequests: 1,
+			wantErr:      ErrTokenExpired,
+			wantMsg:      ErrTokenExpired.Error(),
+		},
+		{
+			name:         "env token 403 is the setup-token scope gap",
+			creds:        credentials{token: &ClaudeAiOAuth{AccessToken: "env"}, source: envOAuthToken},
+			status:       http.StatusForbidden,
+			wantRequests: 1,
+			wantErr:      ErrEnvTokenScope,
+		},
+		{
+			name:         "env token 401 points at setup-token",
+			creds:        credentials{token: &ClaudeAiOAuth{AccessToken: "env"}, source: envOAuthToken},
+			status:       http.StatusUnauthorized,
+			wantRequests: 1,
+			wantErr:      ErrTokenExpired,
+			wantMsg:      "claude setup-token",
+		},
+		{
+			name:         "env token with user:profile returns usage",
+			creds:        credentials{token: &ClaudeAiOAuth{AccessToken: "env"}, source: envOAuthToken},
+			status:       http.StatusOK,
+			wantRequests: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				assert.Equal(t, "Bearer "+tt.creds.token.AccessToken, r.Header.Get("Authorization"))
+				w.WriteHeader(tt.status)
+				if tt.status == http.StatusOK {
+					_, _ = w.Write([]byte(`{"five_hour":{"utilization":42,"resets_at":"2026-10-21T15:00:00Z"}}`))
+				} else {
+					_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"nope"}}`))
+				}
+			}))
+			defer srv.Close()
+
+			client := &Client{credentials: tt.creds, httpClient: srv.Client(), endpoint: srv.URL}
+			usage, err := client.FetchUsage()
+
+			assert.Equal(t, tt.wantRequests, requests)
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+				assert.InDelta(t, 42, usage.FiveHour.Utilisation, 0.001)
+				return
+			}
+			assert.ErrorIs(t, err, tt.wantErr)
+			if tt.wantMsg != "" {
+				assert.Contains(t, err.Error(), tt.wantMsg)
 			}
 		})
 	}

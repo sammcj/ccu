@@ -6,7 +6,8 @@ Project-specific context for AI agents working with CCU (Claude Code Usage Monit
 Dual data source system:
 - **OAuth API** (primary): Live usage from Anthropic's API at `https://api.anthropic.com/api/oauth/usage`
   - Requires OAuth token with `user:profile` scope (re-authenticate: `claude logout && claude login`)
-  - Credentials retrieved from macOS Keychain using `security` command
+  - Credentials retrieved from macOS Keychain using `security` command; `CLAUDE_CODE_OAUTH_TOKEN` is the fallback when the Keychain token is missing or expired (see `resolveCredentials()`)
+  - Expired Keychain tokens are rejected locally. When an API key or cloud provider env var is set, Claude Code isn't refreshing the token, and the error says so
   - Returns exact reset times and combined web + CLI usage
 - **JSONL fallback**: Parses `~/.claude/projects/**/*.jsonl` when OAuth unavailable
   - CLI-only activity (no web usage)
@@ -31,7 +32,7 @@ DO NOT confuse these - they serve different purposes.
 fallback with raw cost and message count but no progress bars or percentages. JSONL data cannot
 produce accurate percentages because the hardcoded plan limits don't match Anthropic's actual limits.
 
-**OAuth retry**: When OAuth is disabled it automatically retries after 5 minutes, including for token-expired errors (Claude Code usually refreshes the token itself). Only the missing-scope error (`oauth.ErrMissingScope`, fixed by `claude logout && claude login`) never auto-retries - see `oauth.RequiresUserAction()`.
+**OAuth retry**: When OAuth is disabled it automatically retries after 5 minutes, including for token-expired errors (Claude Code usually refreshes the token itself). Only the missing-scope error (`oauth.ErrMissingScope`, fixed by `claude logout && claude login`) never auto-retries - see `oauth.RequiresUserAction()`. `oauth.ErrEnvTokenScope` (setup-token refused) does retry, so a fresh Keychain login is picked up without restarting.
 
 **Per-model weekly limits come from `limits[]`**: The usage API returns `seven_day_sonnet` and
 `seven_day_opus` as null now. Per-model weekly limits arrive as `weekly_scoped` entries in the
