@@ -370,7 +370,7 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 
 	// Gate all OAuth fetches behind minimum intervals to avoid API rate limits (429s).
 	// Normal polling: every 4 minutes. Urgent (wake/focus/stale): still respect 60s minimum.
-	shouldFetchOAuth := oauth.IsAvailable() && oauthNotDisabled && !oauthRateLimited &&
+	shouldFetchOAuth := !config.NoOAuth && oauth.IsAvailable() && oauthNotDisabled && !oauthRateLimited &&
 		(model == nil ||
 			pastNormalInterval ||
 			(pastForceInterval && (forceRefresh || sessionStale || weeklyRefreshNeeded)))

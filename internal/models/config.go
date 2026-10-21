@@ -38,6 +38,10 @@ type Config struct {
 	// CheckModels compares ccu's model tables against upstream rates and exits
 	CheckModels bool
 
+	// NoOAuth stops all calls to the OAuth usage API, for setup-token users
+	// whose plan usage comes from `ccu statusline` instead
+	NoOAuth bool
+
 	// API server configuration
 	API APIConfig
 }

@@ -8,6 +8,7 @@
 
 - `ccu statusline`: set it as Claude Code's status line command and CCU shows 5-hour and weekly plan usage for `CLAUDE_CODE_OAUTH_TOKEN` (setup-token) users, who can't use the OAuth usage endpoint. It can wrap an existing status line (`ccu statusline -- <command>`), and the dashboard shows how long ago the numbers last changed
 - `/api/status` reports `usage_source` (`oauth` or `statusline`) and `usage_updated_at`
+- `-no-oauth` flag (env `CCU_NO_OAUTH=1`) stops all OAuth usage API calls, for setup-token users relying on `ccu statusline`
 
 ### Changed
 

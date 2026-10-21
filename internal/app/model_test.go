@@ -582,3 +582,13 @@ func TestUsageSourceNote(t *testing.T) {
 		assert.Empty(t, m.usageSourceNote(now))
 	})
 }
+
+func TestNoOAuthSkipsOAuth(t *testing.T) {
+	cfg := models.DefaultConfig()
+	cfg.NoOAuth = true
+
+	m := NewModel(cfg)
+
+	assert.False(t, m.oauthEnabled, "-no-oauth must never treat OAuth as available")
+	assert.Contains(t, m.getOAuthUnavailableReason(), "disabled with -no-oauth")
+}

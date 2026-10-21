@@ -78,6 +78,7 @@ ccu -hours=48      # Last 48 hours
 - `-custom-cost` - Custom cost limit in USD (requires `-plan=custom`)
 - `-custom-messages` - Custom message limit (requires `-plan=custom`)
 - `-weekly` - Show weekly usage panel (default: `true`)
+- `-no-oauth` - Never call the OAuth usage API (env: `CCU_NO_OAUTH=1`). For setup-token users relying on [`ccu statusline`](#setup-token-users-ccu-statusline). The daily published pricing fetch still runs
 - `-check-models` - Check ccu's model pricing and display-name tables against upstream rates (LiteLLM dataset) and exit. Exit code `1` on drift with a hint describing what to update, `2` on fetch errors. Useful in CI or for AI agents maintaining this codebase
 - `-api` - Enable the embedded HTTP API server (default: `false`)
 - `-api-port` - API server port (default: `19840`)
@@ -111,7 +112,9 @@ On its own it prints `5h 24% | 7d 41%`. To keep an existing status line, put its
 "command": "ccu statusline -- npx -y ccstatusline@latest"
 ```
 
-Each run saves the numbers to `rate-limits.json` in the user cache dir (`~/Library/Caches/ccu/` on macOS). The dashboard uses them whenever OAuth has no data.
+Each run saves the numbers to `rate-limits.json` in the user cache dir (`~/Library/Caches/ccu/` on macOS). The dashboard uses them whenever OAuth has no data. If Claude Code runs inside a sandbox, allow writes to that directory, or the status line still prints but the dashboard gets nothing.
+
+Run the dashboard with `ccu -no-oauth` (or `CCU_NO_OAUTH=1`) so it never calls the OAuth usage API, which can't succeed with a setup-token. Without it, CCU already skips the request while the Keychain token is expired. It still calls whenever the Keychain token looks valid.
 
 - Numbers only update while Claude Code is making requests, and claude.ai or desktop usage shows up on the next one. The dashboard labels the data with how long ago it last changed
 - Claude Code only re-runs the status line on main-session events, so `refreshInterval` is needed to pick up changes while the main session is idle

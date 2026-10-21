@@ -36,6 +36,7 @@ func ParseFlags() (*models.Config, error) {
 	customMessages := flag.Int("custom-messages", 0, "Custom message limit (requires -plan=custom)")
 	showWeekly := flag.Bool("weekly", true, "Show weekly usage panel")
 	checkModels := flag.Bool("check-models", false, "Check ccu's model pricing/name tables against upstream rates and exit (exit code 1 on drift, 2 on fetch error)")
+	noOAuth := flag.Bool("no-oauth", false, "Never call the OAuth usage API, e.g. with a setup-token and 'ccu statusline' (env: CCU_NO_OAUTH)")
 	showHelp := flag.Bool("help", false, "Show help message")
 	showVersion := flag.Bool("version", false, "Show version information")
 
@@ -158,6 +159,13 @@ func ParseFlags() (*models.Config, error) {
 
 	config.CheckModels = *checkModels
 
+	config.NoOAuth = *noOAuth
+	if !config.NoOAuth {
+		if v := os.Getenv("CCU_NO_OAUTH"); v == "true" || v == "1" {
+			config.NoOAuth = true
+		}
+	}
+
 	// API server configuration (precedence: CLI flag > env var > token file)
 	config.API.Enabled = *apiEnabled
 	if !config.API.Enabled {
@@ -242,12 +250,14 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  ccu [flags]")
+	fmt.Println("  ccu statusline [-- command args...]    # Claude Code status line command (see README)")
 	fmt.Println()
 	fmt.Println("Flags:")
 	flag.PrintDefaults()
 	fmt.Println()
 	fmt.Println("Data Sources:")
 	fmt.Println("  OAuth API (preferred): Live usage from Anthropic servers (API polled every 4 minutes)")
+	fmt.Println("  Status line: Plan usage captured by 'ccu statusline', for setup-token users")
 	fmt.Println("  JSONL files (fallback): Local CLI activity parsing (30s default refresh)")
 	fmt.Println()
 	fmt.Println("Examples:")
@@ -261,6 +271,7 @@ func printHelp() {
 	fmt.Println("  ccu -hours=48                          # Load last 48 hours of data")
 	fmt.Println("  ccu -plan=custom -custom-tokens=50000  # Use custom token limit")
 	fmt.Println("  ccu -check-models                      # Check model pricing tables against upstream")
+	fmt.Println("  ccu -no-oauth                          # Never call the OAuth usage API (status line + JSONL only)")
 	fmt.Println("  ccu -api -api-port=19840               # Enable HTTP API server")
 	fmt.Println("  ccu -api -api-token=secret             # API server with bearer token auth")
 	fmt.Println("  ccu -api -api-allow=192.168.1.0/24     # API server with IP allowlist")

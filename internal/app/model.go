@@ -62,7 +62,7 @@ func NewModel(config *models.Config) *AppModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 
-	oauthAvailable := oauth.IsAvailable()
+	oauthAvailable := !config.NoOAuth && oauth.IsAvailable()
 
 	// Adjust refresh rate based on data source if using default value
 	// OAuth: 60s (less frequent, more expensive API calls)
@@ -221,6 +221,9 @@ func (m *AppModel) IsOAuthDisabled() bool {
 // getOAuthUnavailableReason returns a user-facing reason why OAuth data isn't showing.
 // Distinguishes between permanently disabled, temporarily rate limited, and still loading.
 func (m *AppModel) getOAuthUnavailableReason() string {
+	if m.config != nil && m.config.NoOAuth {
+		return "disabled with -no-oauth - set 'ccu statusline' as Claude Code's status line for plan usage"
+	}
 	if m.oauthDisableReason != "" {
 		return m.oauthDisableReason
 	}
