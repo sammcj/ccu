@@ -28,50 +28,43 @@ var (
 	// ErrMissingScope indicates the stored token lacks the user:profile scope;
 	// only re-authenticating fixes this, so it must never auto-retry
 	ErrMissingScope = errors.New("OAuth token lacks required 'user:profile' scope. Try re-authenticating: claude logout && claude login")
-	// ErrEnvTokenScope indicates CLAUDE_CODE_OAUTH_TOKEN was refused by the usage
-	// endpoint. Tokens from `claude setup-token` only carry user:inference. It
-	// still auto-retries so a fresh Keychain login is picked up without a restart.
-	ErrEnvTokenScope = errors.New(envOAuthToken + " can't read plan usage (setup-tokens lack 'user:profile') - run 'claude logout && claude login' so ccu can use the Keychain token")
 )
 
 const (
-	usageEndpoint  = "https://api.anthropic.com/api/oauth/usage"
-	sourceKeychain = "Keychain"
-	// envOAuthToken holds a long-lived token from `claude setup-token`. Claude
-	// Code prefers it over the Keychain login, leaving the Keychain token unrefreshed.
+	usageEndpoint = "https://api.anthropic.com/api/oauth/usage"
+	// envOAuthToken holds a token from `claude setup-token`. CCU can't use it:
+	// setup-token always requests user:inference only, and the usage endpoint
+	// needs user:profile.
 	envOAuthToken = "CLAUDE_CODE_OAUTH_TOKEN"
 )
 
-// altAuthEnvVars are the env vars that make Claude Code authenticate outside a
-// claude.ai subscription, in Claude Code's own precedence order. None of them
-// have plan limits for the usage endpoint to report.
+// altAuthEnvVars are the env vars Claude Code prefers over the Keychain login,
+// in its own precedence order. While one is in use Claude Code stops refreshing
+// the Keychain token, so it goes stale.
 var altAuthEnvVars = []string{
 	"CLAUDE_CODE_USE_BEDROCK",
 	"CLAUDE_CODE_USE_VERTEX",
 	"CLAUDE_CODE_USE_FOUNDRY",
 	"ANTHROPIC_AUTH_TOKEN",
 	"ANTHROPIC_API_KEY",
+	envOAuthToken,
 }
 
 // TokenExpiredError wraps ErrTokenExpired with what is known about the stale
-// token, so the UI can say why it isn't being refreshed.
+// Keychain token, so the UI can say why it isn't being refreshed.
 type TokenExpiredError struct {
-	Source    string    // sourceKeychain or envOAuthToken
-	ExpiresAt time.Time // zero when unknown (env tokens, server-side rejection)
-	AltAuth   string    // set altAuthEnvVars entry, if any
+	ExpiresAt time.Time
+	AltAuth   string // set altAuthEnvVars entry, if any
 }
 
 func (e *TokenExpiredError) Error() string {
-	switch {
-	case e.Source == envOAuthToken:
-		// A fresh setup-token would only hit the 403 scope gap, so point at a Keychain login
-		return envOAuthToken + " was rejected (expired or revoked) - run 'claude logout && claude login' so ccu can use the Keychain token"
-	case e.AltAuth != "":
-		return fmt.Sprintf("Keychain token expired; %s is set so Claude Code isn't refreshing it (no plan limits to show)", e.AltAuth)
-	case !e.ExpiresAt.IsZero():
+	switch e.AltAuth {
+	case "":
 		return fmt.Sprintf("Keychain OAuth token expired %s - run 'claude' to refresh it (or 'claude login')", e.ExpiresAt.Local().Format("2 Jan 15:04"))
+	case envOAuthToken:
+		return "Keychain token expired; " + envOAuthToken + " is set so Claude Code isn't refreshing it. Setup-tokens can't read plan usage - unset it and run 'claude login'"
 	}
-	return ErrTokenExpired.Error()
+	return fmt.Sprintf("Keychain token expired; %s is set so Claude Code isn't refreshing it (no plan limits to show)", e.AltAuth)
 }
 
 func (e *TokenExpiredError) Unwrap() error {
@@ -345,57 +338,27 @@ func (u *UsageData) EffectiveFiveHour(now time.Time) (percent float64, resetsAt 
 	return percent, resetsAt, false
 }
 
-// credentials is the token chosen for the usage endpoint and where it came from
-type credentials struct {
-	token   *ClaudeAiOAuth
-	source  string // sourceKeychain or envOAuthToken
-	altAuth string // set altAuthEnvVars entry, used to explain a stale Keychain token
-}
-
 // Client handles OAuth-based usage data fetching
 type Client struct {
-	credentials
 	httpClient *http.Client
+	token      *ClaudeAiOAuth
+	altAuth    string // set altAuthEnvVars entry, used to explain a stale token
 	endpoint   string
 }
 
 // NewClient creates a new OAuth client
 func NewClient() (*Client, error) {
-	creds, err := getCredentials()
+	token, err := getKeychainCredentials()
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve OAuth credentials: %w", err)
 	}
 
 	return &Client{
-		credentials: creds,
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		endpoint:    usageEndpoint,
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+		token:      token,
+		altAuth:    altAuthEnv(os.Getenv),
+		endpoint:   usageEndpoint,
 	}, nil
-}
-
-func getCredentials() (credentials, error) {
-	return resolveCredentials(getKeychainCredentials, os.Getenv, time.Now())
-}
-
-// resolveCredentials prefers a live Keychain token because its scopes and
-// expiry can be checked locally. CLAUDE_CODE_OAUTH_TOKEN is the fallback: it is
-// opaque and usually a setup-token that the usage endpoint refuses. An expired
-// Keychain token is still returned when nothing else exists, so FetchUsage can
-// explain why it isn't being refreshed.
-func resolveCredentials(keychain func() (*ClaudeAiOAuth, error), getenv func(string) string, now time.Time) (credentials, error) {
-	altAuth := altAuthEnv(getenv)
-
-	kc, err := keychain()
-	if err == nil && !kc.expired(now) {
-		return credentials{token: kc, source: sourceKeychain, altAuth: altAuth}, nil
-	}
-	if tok := strings.TrimSpace(getenv(envOAuthToken)); tok != "" {
-		return credentials{token: &ClaudeAiOAuth{AccessToken: tok}, source: envOAuthToken, altAuth: altAuth}, nil
-	}
-	if err != nil {
-		return credentials{}, err
-	}
-	return credentials{token: kc, source: sourceKeychain, altAuth: altAuth}, nil
 }
 
 // altAuthEnv returns the first set altAuthEnvVars entry, or "" when none are.
@@ -439,9 +402,9 @@ func getKeychainCredentials() (*ClaudeAiOAuth, error) {
 
 // FetchUsage retrieves current usage data from Anthropic's OAuth API
 func (c *Client) FetchUsage() (*UsageData, error) {
-	// An expired Keychain token is a guaranteed 401, so skip the request
-	if c.source == sourceKeychain && c.token.expired(time.Now()) {
-		return nil, &TokenExpiredError{Source: c.source, ExpiresAt: c.token.expiresAtTime(), AltAuth: c.altAuth}
+	// An expired token is a guaranteed 401, so skip the request
+	if c.token.expired(time.Now()) {
+		return nil, &TokenExpiredError{ExpiresAt: c.token.expiresAtTime(), AltAuth: c.altAuth}
 	}
 
 	req, err := http.NewRequest("GET", c.endpoint, nil)
@@ -487,13 +450,7 @@ func (c *Client) FetchUsage() (*UsageData, error) {
 		// Both map to ErrTokenExpired so the UI shows a single, actionable
 		// message instead of a wall of JSON.
 		if resp.StatusCode == http.StatusUnauthorized {
-			// No AltAuth: a token that passed the local expiry check was
-			// revoked, so blaming an API key env var would mislead
-			return nil, &TokenExpiredError{Source: c.source}
-		}
-		// The env token is opaque, so a 403 is the scope check we couldn't do locally
-		if resp.StatusCode == http.StatusForbidden && c.source == envOAuthToken {
-			return nil, ErrEnvTokenScope
+			return nil, ErrTokenExpired
 		}
 
 		if decodeErr != nil {
@@ -529,9 +486,9 @@ var (
 	availabilityMu    sync.Mutex
 	availabilityAt    time.Time
 	availabilityValue bool
-	// checkCredentials is a seam for tests; production uses the real lookup
-	checkCredentials = func() bool {
-		_, err := getCredentials()
+	// checkKeychain is a seam for tests; production uses the real keychain lookup
+	checkKeychain = func() bool {
+		_, err := getKeychainCredentials()
 		return err == nil
 	}
 )
@@ -547,7 +504,7 @@ func IsAvailable() bool {
 		return availabilityValue
 	}
 
-	availabilityValue = checkCredentials()
+	availabilityValue = checkKeychain()
 	availabilityAt = time.Now()
 	return availabilityValue
 }
@@ -555,7 +512,7 @@ func IsAvailable() bool {
 // RequiresUserAction reports whether the error can only be resolved by the user
 // re-authenticating (claude logout && claude login). Token expiry is excluded
 // because Claude Code usually refreshes the token itself, so it stays eligible
-// for auto-retry. An expired Keychain token costs no API call to re-check.
+// for auto-retry. An expired token costs no API call to re-check.
 func RequiresUserAction(err error) bool {
 	return errors.Is(err, ErrMissingScope)
 }

@@ -207,7 +207,7 @@ claude login
 
 After re-authentication, CCU will automatically use OAuth data when available.
 
-CCU reads the token from the macOS Keychain, falling back to `CLAUDE_CODE_OAUTH_TOKEN` when the Keychain token is missing or expired. Tokens from `claude setup-token` lack the `user:profile` scope, so they can't read plan usage. API keys (`ANTHROPIC_API_KEY`) and cloud providers have no plan limits, and Claude Code stops refreshing the Keychain token while using them, so CCU falls back to JSONL once that token expires.
+CCU reads the token from the macOS Keychain. While Claude Code authenticates with `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or a cloud provider, it stops refreshing that token, so CCU falls back to JSONL once it expires. Tokens from `claude setup-token` can't read plan usage (they only carry `user:inference`). To track a subscription, unset `CLAUDE_CODE_OAUTH_TOKEN` and run `claude login`.
 
 #### 2. Local JSONL Files (Degraded Fallback)
 

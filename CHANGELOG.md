@@ -11,8 +11,7 @@
 ### Fixed
 
 - The 1H cache comparison measured the gap between requests from the previous response's last transcript line, which can land minutes after the request started. The cache TTL runs from the start of a request, so gaps are now measured from each response's first line, which slightly undercounted 5-minute cache misses before
-- When Claude Code authenticates with `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or a cloud provider, the Keychain OAuth token goes stale and CCU kept saying "run 'claude login'" every 5 minutes. CCU now checks token expiry locally (no doomed API call) and says which env var means there are no plan limits to show
-- `CLAUDE_CODE_OAUTH_TOKEN` is used when the Keychain token is missing or expired. Tokens from `claude setup-token` lack the `user:profile` scope, so a 403 now says so instead of a raw API error
+- When Claude Code authenticates with `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or a cloud provider, the Keychain OAuth token goes stale and CCU kept saying "run 'claude login'" every 5 minutes. CCU now checks token expiry locally (no doomed API call) and names the env var responsible. For setup-tokens, which can't read plan usage, it says to unset the variable and run `claude login`
 
 ## [0.2.17] - 2026-10-09
 
