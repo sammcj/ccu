@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/oauth"
 	"github.com/stretchr/testify/assert"
@@ -121,4 +122,17 @@ func TestDataLoadedMsg_IdenticalEntriesSkipSessionRebuild(t *testing.T) {
 	rebuilt := m.GetSessions()
 	assert.NotSame(t, &firstSessions[0], &rebuilt[0],
 		"different entries slice should rebuild session blocks")
+}
+
+func TestAdvancedKeyToggles(t *testing.T) {
+	m := *NewModel(models.DefaultConfig())
+	press := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}}
+
+	updated, cmd := m.Update(press)
+	assert.Nil(t, cmd, "toggling is a redraw, not a data load")
+	m = updated.(AppModel)
+	assert.True(t, m.showAdvanced)
+
+	updated, _ = m.Update(press)
+	assert.False(t, updated.(AppModel).showAdvanced)
 }

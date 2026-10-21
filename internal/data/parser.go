@@ -18,10 +18,11 @@ var tokenAssistant = []byte(`"assistant"`)
 
 // RawEntry represents the actual Claude Code JSONL structure
 type RawEntry struct {
-	Type      string `json:"type"`
-	Timestamp string `json:"timestamp"`
-	RequestID string `json:"requestId"`
-	Message   struct {
+	Type        string `json:"type"`
+	IsSidechain bool   `json:"isSidechain"`
+	Timestamp   string `json:"timestamp"`
+	RequestID   string `json:"requestId"`
+	Message     struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage struct {
@@ -78,6 +79,7 @@ func ParseJSONLLine(line []byte) (*models.UsageEntry, error) {
 		CacheCreation1hTokens: min(usage.CacheCreation.Ephemeral1hInputTokens, usage.CacheCreationInputTokens),
 		CacheReadTokens:       usage.CacheReadInputTokens,
 		FastMode:              usage.Speed == "fast",
+		Subagent:              raw.IsSidechain,
 		Model:                 raw.Message.Model,
 		MessageID:             raw.Message.ID,
 		RequestID:             raw.RequestID,

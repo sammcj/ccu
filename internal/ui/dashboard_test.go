@@ -421,27 +421,38 @@ func TestSessionCache1hString(t *testing.T) {
 	blocks := analysis.CreateSessionBlocks(entries)
 	require.Len(t, blocks, 1)
 
-	got := sessionCache1hString(&blocks[0])
+	got := sessionCache1hString(&blocks[0], true)
 	// The 1h cache cost $2.00 against $2.20 with the 5m cache
 	assert.Equal(t, "[1H Cache: 85% (-$0.20 of $2.00 vs 5m)]", ansi.Strip(got))
 	assert.Contains(t, got, lipgloss.NewStyle().Foreground(ColorMuted).Render("1H Cache"))
 	assert.Contains(t, got, cacheEfficiencyStyle(9.1).Render("-$0.20"))
 
+	// Subagent requests are judged on their own as well, since they idle differently
+	withAgents := analysis.CreateSessionBlocks(append(entries, models.UsageEntry{
+		Timestamp: base.Add(2 * time.Minute), Model: "claude-opus-5-5", CacheCreationTokens: 1000, CacheCreation1hTokens: 1000,
+		CostUSD: 1.5, CostUSD5mCache: 1.0, Subagent: true,
+	}))
+	got = sessionCache1hString(&withAgents[0], true)
+	assert.Equal(t, "[1H Cache: 90% (+$0.30 of $3.50 vs 5m; agents +$0.50 of $1.50)]", ansi.Strip(got))
+	assert.Contains(t, got, cacheEfficiencyStyle(-50).Render("+$0.50"))
+	assert.Equal(t, "[1H Cache: 90%]", ansi.Strip(sessionCache1hString(&withAgents[0], false)),
+		"the cost comparison stays hidden until advanced view is on")
+
 	worse := analysis.CreateSessionBlocks([]models.UsageEntry{
 		{Timestamp: base, Model: "claude-opus-5-5", CacheCreationTokens: 1000, CacheCreation1hTokens: 1000,
 			CostUSD: 11.0, CostUSD5mCache: 10.0},
 	})
-	assert.Equal(t, "[1H Cache: 100% (+$1.00 of $11.00 vs 5m)]", ansi.Strip(sessionCache1hString(&worse[0])),
+	assert.Equal(t, "[1H Cache: 100% (+$1.00 of $11.00 vs 5m)]", ansi.Strip(sessionCache1hString(&worse[0], true)),
 		"the 1h cache cost $1.00 more than the 5m cache")
 
 	unpriced := analysis.CreateSessionBlocks([]models.UsageEntry{
 		{Timestamp: base, Model: "claude-opus-5-5", CacheCreationTokens: 1000, CacheCreation1hTokens: 1000},
 	})
-	assert.Equal(t, "[1H Cache: 100%]", ansi.Strip(sessionCache1hString(&unpriced[0])), "no 5m comparison, no efficiency")
+	assert.Equal(t, "[1H Cache: 100%]", ansi.Strip(sessionCache1hString(&unpriced[0], true)), "no 5m comparison, no efficiency")
 
-	assert.Empty(t, sessionCache1hString(nil))
+	assert.Empty(t, sessionCache1hString(nil, true))
 	noWrites := analysis.CreateSessionBlocks([]models.UsageEntry{{Timestamp: base, Model: "claude-opus-5-5", InputTokens: 10}})
-	assert.Empty(t, sessionCache1hString(&noWrites[0]), "no cache writes means no share to show")
+	assert.Empty(t, sessionCache1hString(&noWrites[0], true), "no cache writes means no share to show")
 }
 
 func TestCacheEfficiencyStyle(t *testing.T) {
@@ -472,12 +483,12 @@ func TestRenderSessionCacheHitRate(t *testing.T) {
 	blocks := analysis.CreateSessionBlocks(entries)
 	assert.Len(t, blocks, 1)
 
-	got := renderSessionCacheHitRate(&blocks[0], barWidth)
+	got := renderSessionCacheHitRate(&blocks[0], barWidth, true)
 
 	// Token classes summed by hand from the entries above: the per-model
 	// aggregates must produce the same rendered line the entry loop did.
 	rate := analysis.CalculateCacheHitRate(100, 300, 600)
-	expected := renderCacheHitRateLine("Session - Cache Hit:", rate, barWidth, sessionCache1hString(&blocks[0]))
+	expected := renderCacheHitRateLine("Session - Cache Hit:", rate, barWidth, sessionCache1hString(&blocks[0], true))
 	assert.Equal(t, expected, got)
 	assert.Contains(t, got, "60.0%")
 	assert.Contains(t, ansi.Strip(got), "[1H Cache: 67%]", "the 1h cache share sits on the cache hit row")
@@ -486,9 +497,9 @@ func TestRenderSessionCacheHitRate(t *testing.T) {
 func TestRenderSessionCacheHitRateNoActivity(t *testing.T) {
 	// Width is irrelevant with no activity; a narrower bar also exercises the parameter
 	const barWidth = 30
-	assert.Empty(t, renderSessionCacheHitRate(nil, barWidth))
-	assert.Empty(t, renderSessionCacheHitRate(&models.SessionBlock{IsGap: true}, barWidth))
-	assert.Empty(t, renderSessionCacheHitRate(&models.SessionBlock{}, barWidth))
+	assert.Empty(t, renderSessionCacheHitRate(nil, barWidth, true))
+	assert.Empty(t, renderSessionCacheHitRate(&models.SessionBlock{IsGap: true}, barWidth, true))
+	assert.Empty(t, renderSessionCacheHitRate(&models.SessionBlock{}, barWidth, true))
 }
 
 func TestWeeklySectionShownWithoutPerModelFields(t *testing.T) {

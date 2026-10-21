@@ -1,6 +1,7 @@
 package data
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -136,6 +137,20 @@ func TestParseJSONLLineCacheWriteSplitEdgeCases(t *testing.T) {
 		// (1*4 + 100*5) / 1M
 		assert.InDelta(t, 0.000504, entry.CostUSD, 1e-12)
 	})
+}
+
+func TestParseJSONLLineSubagent(t *testing.T) {
+	const line = `{"type":"assistant","isSidechain":%s,"timestamp":"2026-07-03T10:00:00Z","requestId":"req_1","message":{"id":"msg_1","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":1}}}`
+
+	sub, err := ParseJSONLLine(fmt.Appendf(nil, line, "true"))
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+	assert.True(t, sub.Subagent)
+
+	top, err := ParseJSONLLine(fmt.Appendf(nil, line, "false"))
+	require.NoError(t, err)
+	require.NotNil(t, top)
+	assert.False(t, top.Subagent)
 }
 
 func TestParseJSONLLineFastMode(t *testing.T) {

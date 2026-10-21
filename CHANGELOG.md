@@ -6,6 +6,17 @@
 
 ### Added
 
+- The 1H Cache comparison on the `Session - Cache Hit` row shows the subagent share on its own when subagents wrote to the 1-hour cache: `(+$3.17 of $181.26 vs 5m; agents +$18.40 of $140.03)`. Subagents rarely idle past 5 minutes, so the 1-hour cache can cost them more than the main conversation. Subagent requests are identified by `isSidechain` in the transcript
+- `a` key toggles advanced detail
+
+### Changed
+
+- The 1H Cache cost comparison is hidden until `a` is pressed, leaving `[1H Cache: 100%]` on the row by default
+
+## [0.2.23] - 2026-10-22
+
+### Added
+
 - `ccu statusline`: set it as Claude Code's status line command and CCU shows 5-hour and weekly plan usage for `CLAUDE_CODE_OAUTH_TOKEN` (setup-token) users, who can't use the OAuth usage endpoint. It can wrap an existing status line (`ccu statusline -- <command>`), and the dashboard shows how long ago the numbers last changed
 - `/api/status` reports `usage_source` (`oauth` or `statusline`) and `usage_updated_at`
 - `-no-oauth` flag (env `CCU_NO_OAUTH=1`) stops all OAuth usage API calls, for setup-token users relying on `ccu statusline`

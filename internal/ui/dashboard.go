@@ -75,6 +75,7 @@ type DashboardData struct {
 	OAuthUnavailableReason string           // Reason OAuth is unavailable (for fallback display)
 	UsageSourceNote        string           // Set when OAuthData isn't live, e.g. its source and age
 	Width                  int              // Terminal width in columns; 0 disables line clipping
+	Advanced               bool             // Show detail toggled by the 'a' key, e.g. the 1H cache cost comparison
 }
 
 // RenderDashboard renders the realtime dashboard in a single-column layout
@@ -118,7 +119,7 @@ func RenderDashboard(data DashboardData) string {
 	output = append(output, renderBurnRates(burnRate, costBurnRate, data.Limits, barWidth, sessionResetTime))
 
 	// Session cache hit rate — JSONL-derived, available regardless of OAuth status
-	if line := renderSessionCacheHitRate(data.CurrentSession, barWidth); line != "" {
+	if line := renderSessionCacheHitRate(data.CurrentSession, barWidth, data.Advanced); line != "" {
 		output = append(output, line)
 	}
 
@@ -281,36 +282,50 @@ func getSessionDistributionString(session *models.SessionBlock) string {
 
 // sessionCache1hString returns the share of the session's cache writes that
 // went to the 1-hour cache, and what the session cost against the 5-minute
-// cache: "[1H Cache: 100% (+$11.75 of $124.72 vs 5m)]". It returns "" with no cache
-// writes, and leaves out the comparison with no 1-hour writes to judge.
-func sessionCache1hString(session *models.SessionBlock) string {
+// cache: "[1H Cache: 100% (+$11.75 of $124.72 vs 5m)]". When subagents wrote to
+// the 1-hour cache, their share of the comparison follows on its own:
+// "(... vs 5m; agents +$0.50 of $30.10)". It returns "" with no cache writes, and
+// leaves out the comparison with no 1-hour writes to judge, or unless advanced.
+func sessionCache1hString(session *models.SessionBlock, advanced bool) string {
 	if session == nil {
 		return ""
 	}
-	var writes, writes1h int
-	var cost, cost5m float64
+	var all models.ModelStats
 	for _, stats := range session.PerModelStats {
-		writes += stats.CacheCreationTokens
-		writes1h += stats.CacheCreation1hTokens
-		cost += stats.CostUSD
-		cost5m += stats.CostUSD5mCache
+		all.CacheCreationTokens += stats.CacheCreationTokens
+		all.CacheCreation1hTokens += stats.CacheCreation1hTokens
+		all.CostUSD += stats.CostUSD
+		all.CostUSD5mCache += stats.CostUSD5mCache
 	}
-	if writes == 0 {
+	if all.CacheCreationTokens == 0 {
 		return ""
 	}
 	// Label coloured like the model names beside it, in the theme's muted purple
 	label := lipgloss.NewStyle().Foreground(ColorMuted).Render("1H Cache")
-	out := fmt.Sprintf("%s: %.0f%%", label, float64(writes1h)/float64(writes)*100)
-	if writes1h > 0 && cost5m > 0 {
-		extra := cost - cost5m
-		sign := "+"
-		if extra < 0 {
-			sign = "-"
+	out := fmt.Sprintf("%s: %.0f%%", label, float64(all.CacheCreation1hTokens)/float64(all.CacheCreationTokens)*100)
+	if vs5m := cache1hVs5m(all); advanced && vs5m != "" {
+		out += " (" + vs5m + " vs 5m"
+		if agents := cache1hVs5m(session.SubagentStats); agents != "" {
+			out += "; agents " + agents
 		}
-		style := cacheEfficiencyStyle(-extra / cost5m * 100)
-		out += fmt.Sprintf(" (%s of $%.2f vs 5m)", style.Render(fmt.Sprintf("%s$%.2f", sign, math.Abs(extra))), cost)
+		out += ")"
 	}
 	return "[" + out + "]"
+}
+
+// cache1hVs5m renders what the 1-hour cache cost against the 5-minute cache,
+// "+$11.75 of $124.72", or "" with nothing to compare.
+func cache1hVs5m(stats models.ModelStats) string {
+	if stats.CacheCreation1hTokens == 0 || stats.CostUSD5mCache <= 0 {
+		return ""
+	}
+	extra := stats.CostUSD - stats.CostUSD5mCache
+	sign := "+"
+	if extra < 0 {
+		sign = "-"
+	}
+	style := cacheEfficiencyStyle(-extra / stats.CostUSD5mCache * 100)
+	return fmt.Sprintf("%s of $%.2f", style.Render(fmt.Sprintf("%s$%.2f", sign, math.Abs(extra))), stats.CostUSD)
 }
 
 // cacheEfficiencyStyle colours the 1-hour cache saving: green when it paid
@@ -805,7 +820,7 @@ func renderCacheHitRateLine(label string, rate float64, barWidth int, suffix str
 
 // renderSessionCacheHitRate computes and renders cache hit rate for the current session.
 // Returns empty string when there is no input activity (rate of 0% with no data is misleading).
-func renderSessionCacheHitRate(session *models.SessionBlock, barWidth int) string {
+func renderSessionCacheHitRate(session *models.SessionBlock, barWidth int, advanced bool) string {
 	if session == nil || session.IsGap {
 		return ""
 	}
@@ -819,7 +834,7 @@ func renderSessionCacheHitRate(session *models.SessionBlock, barWidth int) strin
 		return ""
 	}
 	rate := analysis.CalculateCacheHitRate(input, cacheCreate, cacheRead)
-	return renderCacheHitRateLine("Session - Cache Hit:", rate, barWidth, sessionCache1hString(session))
+	return renderCacheHitRateLine("Session - Cache Hit:", rate, barWidth, sessionCache1hString(session, advanced))
 }
 
 // weeklyCacheHitWarnThreshold is the rate below which the weekly cache hit row is shown.

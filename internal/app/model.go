@@ -43,6 +43,7 @@ type AppModel struct {
 	loadGeneration          uint64    // Incremented per data load dispatch so stale results are dropped
 	width                   int
 	height                  int
+	showAdvanced            bool // Toggled by 'a': shows extra detail such as the 1H cache cost comparison
 
 	// Manual refresh rate limiting
 	lastManualRefresh      time.Time // When last manual refresh was triggered

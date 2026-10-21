@@ -95,6 +95,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
+		case "a":
+			m.showAdvanced = !m.showAdvanced
+			return m, nil
 		case " ", "r":
 			// Manual refresh with rate limiting
 			allowed, waitDuration := m.CheckManualRefreshRateLimit()
@@ -300,6 +303,7 @@ func (m AppModel) View() string {
 			OAuthUnavailableReason: m.getOAuthUnavailableReason(),
 			UsageSourceNote:        m.usageSourceNote(time.Now()),
 			Width:                  m.width,
+			Advanced:               m.showAdvanced,
 		}
 		content = ui.RenderDashboard(data)
 	}

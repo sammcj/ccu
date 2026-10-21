@@ -85,6 +85,12 @@ ccu -hours=48      # Last 48 hours
 - `-api-bind` - API server bind address (default: `0.0.0.0`)
 - `-api-token` - Bearer token for API auth; empty means no auth
 - `-api-allow` - Comma-separated CIDR allowlist, e.g. `192.168.1.0/24,10.0.0.1/32`; empty means allow all
+
+### Keys
+
+- `a` - Toggle advanced detail: the 1H cache cost comparison on the `Session - Cache Hit` row
+- `r` or space - Refresh now
+- `q` or `ctrl+c` - Quit
 - `-help` - Show help message
 - `-version` - Show version information
 
@@ -292,7 +298,7 @@ Burn rates are calculated using a proportional overlapping session method over t
 
 ### Model Pricing
 
-Costs use ccu's built-in rate table. For a model missing from it, ccu reads rates from [Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing), cached for 24 hours in `<user cache dir>/ccu/pricing.json`. The page is fetched at most once per run. If the model still isn't found (or you're offline), ccu uses the model family's current rate and marks those costs as estimates. The page also sets what an unversioned name such as `sonnet` means: the newest generally available release of that family it lists. ccu refreshes the cached page in the background at startup once it's a day old. Models priced by prompt length (Haiku 5.5 charges more above 100k prompt tokens) are costed per request, counting input, cache write and cache read tokens. Cache writes are split per request into 5-minute (1.25x input) and 1-hour (2x input) writes, using the breakdown Claude Code records for each response. The `Session - Cache Hit` row ends with the share of the session's cache writes that went to the 1-hour cache, then what the session cost against the 5-minute cache, e.g. `(+$11.75 of $124.72 vs 5m)`, where $124.72 is the session cost so far. Each conversation is replayed with the 5-minute cache, so a cache read more than 5 minutes (and at most an hour) after the previous request is costed as a rewrite. Green means the 1-hour cache paid off. Amber means the 5-minute cache would have been up to 5% cheaper, orange more than that. Fast mode requests (`/fast`) are costed at the model's fast mode premium (2x on Opus 5.5, Opus 5 and Opus 4.8) on every rate, including cache. Models without fast mode, such as Opus 4.6, bill fast requests at standard rates.
+Costs use ccu's built-in rate table. For a model missing from it, ccu reads rates from [Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing), cached for 24 hours in `<user cache dir>/ccu/pricing.json`. The page is fetched at most once per run. If the model still isn't found (or you're offline), ccu uses the model family's current rate and marks those costs as estimates. The page also sets what an unversioned name such as `sonnet` means: the newest generally available release of that family it lists. ccu refreshes the cached page in the background at startup once it's a day old. Models priced by prompt length (Haiku 5.5 charges more above 100k prompt tokens) are costed per request, counting input, cache write and cache read tokens. Cache writes are split per request into 5-minute (1.25x input) and 1-hour (2x input) writes, using the breakdown Claude Code records for each response. The `Session - Cache Hit` row ends with the share of the session's cache writes that went to the 1-hour cache, then, with advanced detail on (`a`), what the session cost against the 5-minute cache, e.g. `(+$11.75 of $124.72 vs 5m)`, where $124.72 is the session cost so far. Each conversation is replayed with the 5-minute cache, so a cache read more than 5 minutes (and at most an hour) after the previous request is costed as a rewrite. Green means the 1-hour cache paid off. Amber means the 5-minute cache would have been up to 5% cheaper, orange more than that. When subagents wrote to the 1-hour cache, their part of the session follows separately, e.g. `(+$3.17 of $181.26 vs 5m; agents +$18.40 of $140.03)`. The agents figure is included in the first one. Subagents rarely sit idle for more than 5 minutes, so the 1-hour cache tends to cost them more. Fast mode requests (`/fast`) are costed at the model's fast mode premium (2x on Opus 5.5, Opus 5 and Opus 4.8) on every rate, including cache. Models without fast mode, such as Opus 4.6, bill fast requests at standard rates.
 
 ### Predictions
 

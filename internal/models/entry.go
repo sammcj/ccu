@@ -25,9 +25,13 @@ type UsageEntry struct {
 	// CostUSD5mCache is what the request would have cost had Claude Code used
 	// only the 5-minute cache, to measure whether the 1-hour cache paid off.
 	CostUSD5mCache float64 `json:"cost_usd_5m_cache"`
-	Model          string  `json:"model"`
-	MessageID      string  `json:"message_id"`
-	RequestID      string  `json:"request_id"`
+	// Subagent marks a request made by a subagent (Task tool) rather than the
+	// main conversation. Subagents idle differently, so their cache TTL can pay
+	// off differently and is judged on its own.
+	Subagent  bool   `json:"subagent"`
+	Model     string `json:"model"`
+	MessageID string `json:"message_id"`
+	RequestID string `json:"request_id"`
 }
 
 // TotalTokens returns the sum of all token types
@@ -197,6 +201,17 @@ type ModelStats struct {
 	CostUSD               float64
 	CostUSD5mCache        float64
 	MessageCount          int
+}
+
+func (ms *ModelStats) add(e UsageEntry) {
+	ms.InputTokens += e.InputTokens
+	ms.OutputTokens += e.OutputTokens
+	ms.CacheCreationTokens += e.CacheCreationTokens
+	ms.CacheCreation1hTokens += e.CacheCreation1hTokens
+	ms.CacheReadTokens += e.CacheReadTokens
+	ms.CostUSD += e.CostUSD
+	ms.CostUSD5mCache += e.CostUSD5mCache
+	ms.MessageCount++
 }
 
 // TotalTokens returns sum of all token types for this model

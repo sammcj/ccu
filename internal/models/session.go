@@ -19,6 +19,8 @@ type SessionBlock struct {
 	BurnRate      float64 // tokens per minute
 	CostBurnRate  float64 // USD per minute
 	PerModelStats map[string]*ModelStats
+	// SubagentStats totals the subagent share of PerModelStats across models
+	SubagentStats ModelStats
 	MessageCount  int
 }
 
@@ -86,15 +88,10 @@ func (sb *SessionBlock) AddEntry(entry UsageEntry) {
 		sb.PerModelStats[normalisedModel] = &ModelStats{}
 	}
 
-	stats := sb.PerModelStats[normalisedModel]
-	stats.InputTokens += entry.InputTokens
-	stats.OutputTokens += entry.OutputTokens
-	stats.CacheCreationTokens += entry.CacheCreationTokens
-	stats.CacheCreation1hTokens += entry.CacheCreation1hTokens
-	stats.CacheReadTokens += entry.CacheReadTokens
-	stats.CostUSD += entry.CostUSD
-	stats.CostUSD5mCache += entry.CostUSD5mCache
-	stats.MessageCount++
+	sb.PerModelStats[normalisedModel].add(entry)
+	if entry.Subagent {
+		sb.SubagentStats.add(entry)
+	}
 }
 
 // Limits represents plan-specific usage limits
