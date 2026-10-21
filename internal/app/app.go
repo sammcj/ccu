@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/sammcj/ccu/internal/data"
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/oauth"
+	"github.com/sammcj/ccu/internal/statusline"
 	"github.com/sammcj/ccu/internal/ui"
 )
 
@@ -71,7 +73,8 @@ type dataLoadedMsg struct {
 	oauthUserAction    bool          // Whether the OAuth error needs re-authentication (never auto-retry)
 	oauthFreshData     bool          // Whether OAuth data was freshly fetched (not from cache)
 	oauthRateLimitWait time.Duration // How long to wait before retrying after 429
-	generation         uint64        // Load generation at dispatch - stale results are dropped
+	statuslineData     *oauth.UsageData
+	generation         uint64 // Load generation at dispatch - stale results are dropped
 }
 type clearScreenMsg struct{}
 
@@ -211,6 +214,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.SetLastWeeklyFetch(now)
 			}
 		}
+		m.statuslineData = msg.statuslineData
 
 		if msg.err != nil {
 			m.SetError(msg.err)
@@ -292,8 +296,9 @@ func (m AppModel) View() string {
 			Limits:                 m.limits,
 			CurrentSession:         m.currentSession,
 			AllSessions:            m.sessions,
-			OAuthData:              m.oauthData,
+			OAuthData:              m.GetOAuthData(),
 			OAuthUnavailableReason: m.getOAuthUnavailableReason(),
+			UsageSourceNote:        m.usageSourceNote(time.Now()),
 			Width:                  m.width,
 		}
 		content = ui.RenderDashboard(data)
@@ -436,6 +441,11 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 			oauthData = cachedOAuthData
 		}
 
+		var statuslineData *oauth.UsageData
+		if oauthData == nil {
+			statuslineData = loadStatuslineData(time.Now())
+		}
+
 		// Load at least 7 days (168 hours) of data for weekly usage calculations
 		hoursToLoad := config.HoursBack
 		if config.ShowWeekly && hoursToLoad < 168 {
@@ -452,9 +462,27 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 			oauthUserAction:    oauth.RequiresUserAction(oauthErr),
 			oauthFreshData:     oauthFreshData,
 			oauthRateLimitWait: oauthRateLimitWait,
+			statuslineData:     statuslineData,
 			generation:         loadGeneration,
 		}
 	}
+}
+
+// loadStatuslineData reads the rate limits `ccu statusline` captured. A missing
+// file is the normal case for anyone who hasn't set it up.
+func loadStatuslineData(now time.Time) *oauth.UsageData {
+	path, err := statusline.DefaultPath()
+	if err != nil {
+		return nil
+	}
+	usage, err := statusline.Load(path, now)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("statusline: %v", err)
+		}
+		return nil
+	}
+	return usage
 }
 
 // ResumeMsg creates a resumeMsg for external callers (e.g. SIGCONT handler)

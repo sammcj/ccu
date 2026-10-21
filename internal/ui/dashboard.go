@@ -73,6 +73,7 @@ type DashboardData struct {
 	AllSessions            []models.SessionBlock
 	OAuthData              *oauth.UsageData // Optional OAuth-fetched data
 	OAuthUnavailableReason string           // Reason OAuth is unavailable (for fallback display)
+	UsageSourceNote        string           // Set when OAuthData isn't live, e.g. its source and age
 	Width                  int              // Terminal width in columns; 0 disables line clipping
 }
 
@@ -127,6 +128,10 @@ func RenderDashboard(data DashboardData) string {
 	// If OAuth available, show OAuth-based session metrics; otherwise degraded fallback
 	if data.OAuthData != nil {
 		output = append(output, renderSessionMetricsFromOAuth(data.OAuthData, sessionDistribution, barWidth, now)...)
+		if data.UsageSourceNote != "" {
+			dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+			output = append(output, dimStyle.Render("  ("+data.UsageSourceNote+")"))
+		}
 	} else {
 		output = append(output, renderSessionFallback(data.CurrentSession, sessionDistribution, now, data.OAuthUnavailableReason)...)
 	}

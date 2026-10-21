@@ -498,10 +498,10 @@ func TestTokenExpiredErrorMessage(t *testing.T) {
 			excludes: "claude login",
 		},
 		{
-			name:     "setup-token says to unset it and log in",
+			name:     "setup-token points at the status line bridge",
 			err:      &TokenExpiredError{ExpiresAt: expiry, AltAuth: envOAuthToken},
-			contains: "unset it and run 'claude login'",
-			excludes: "setup-token'",
+			contains: "Set 'ccu statusline' as Claude Code's status line",
+			excludes: "claude login",
 		},
 	}
 

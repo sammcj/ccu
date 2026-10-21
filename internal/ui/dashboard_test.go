@@ -514,6 +514,27 @@ func TestWeeklySectionShownWithoutPerModelFields(t *testing.T) {
 	assert.NotContains(t, result, "Weekly - Opus:")
 }
 
+func TestUsageSourceNoteRendersWithPlanUsage(t *testing.T) {
+	now := time.Now().UTC()
+	usage := &oauth.UsageData{FetchedAt: now}
+	usage.FiveHour.ResetsAt = now.Add(2 * time.Hour).Format(time.RFC3339)
+	usage.FiveHour.Utilisation = 10
+	usage.SevenDay.ResetsAt = now.Add(4 * 24 * time.Hour).Format(time.RFC3339)
+	session := &models.SessionBlock{IsActive: true, StartTime: now.Add(-time.Hour), EndTime: now.Add(4 * time.Hour)}
+
+	result := ansi.Strip(RenderDashboard(DashboardData{
+		Config:          models.DefaultConfig(),
+		CurrentSession:  session,
+		OAuthData:       usage,
+		UsageSourceNote: "from Claude Code status line, updated 3m ago",
+	}))
+	assert.Contains(t, result, "(from Claude Code status line, updated 3m ago)")
+	assert.NotContains(t, result, "OAuth unavailable", "plan usage replaces the fallback notice")
+
+	live := ansi.Strip(RenderDashboard(DashboardData{Config: models.DefaultConfig(), CurrentSession: session, OAuthData: usage}))
+	assert.NotContains(t, live, "status line")
+}
+
 func TestRenderWeeklyUsageFromOAuth_ScopedLimits(t *testing.T) {
 	now := time.Now().UTC()
 	resetsAt := now.Add(4 * 24 * time.Hour).Format(time.RFC3339)

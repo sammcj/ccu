@@ -139,6 +139,8 @@ Example response (fields are omitted when data is unavailable):
   "plan": "max5",
   "server_time": "2026-02-18T12:00:00Z",
   "data_age_seconds": 15,
+  "usage_source": "oauth",
+  "usage_updated_at": "2026-02-18T11:58:00Z",
   "weekly": {
     "all_models": { "utilisation_pct": 30.5, "resets_at": "2026-02-25T00:00:00Z", "resets_in_seconds": 594000 },
     "scoped": {
@@ -181,7 +183,8 @@ Returns `503` with `{"error":"no data"}` before the first data load completes.
 
 - If both `-api-allow` and `-api-token` are unset, CCU logs a warning at startup. Only do this on a fully trusted, isolated network.
 - IP allowlist is checked before auth so the existence of an auth requirement is not leaked to blocked hosts.
-- `weekly` fields are only present when OAuth is active; they are omitted in JSONL-only mode.
+- `weekly` fields are only present when OAuth or `ccu statusline` data is available; they are omitted in JSONL-only mode.
+- `usage_source` (`oauth` or `statusline`) and `usage_updated_at` say where the plan usage came from and when it last changed. `data_age_seconds` only covers the JSONL refresh, so check `usage_updated_at` for status line data, which can be days old.
 
 The keys of `weekly.scoped` vary by account and change whenever Anthropic adds or drops a per-model weekly limit, so consumers should iterate the map rather than index a fixed key.
 Keys are the lowercased model name, suffixed with `/<surface>` when a limit applies to one surface only (e.g. `fable/web`).
@@ -191,7 +194,7 @@ Only `model` and `utilisation_pct` are guaranteed on each entry: `used_hours` an
 
 ### Data Sources
 
-CCU uses **two data sources** for maximum accuracy:
+CCU uses **three data sources**, in order of preference:
 
 #### 1. OAuth API (Primary - Requires Re-authentication)
 
@@ -207,9 +210,29 @@ claude login
 
 After re-authentication, CCU will automatically use OAuth data when available.
 
-CCU reads the token from the macOS Keychain. While Claude Code authenticates with `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or a cloud provider, it stops refreshing that token, so CCU falls back to JSONL once it expires. Tokens from `claude setup-token` can't read plan usage (they only carry `user:inference`). To track a subscription, unset `CLAUDE_CODE_OAUTH_TOKEN` and run `claude login`.
+CCU reads the token from the macOS Keychain. While Claude Code authenticates with `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or a cloud provider, it stops refreshing that token, so CCU falls back to JSONL once it expires. Tokens from `claude setup-token` can't read plan usage from this endpoint (they only carry `user:inference`), so setup-token users need the status line source below.
 
-#### 2. Local JSONL Files (Degraded Fallback)
+#### 2. Claude Code Status Line (Setup-Token Users)
+
+Claude Code passes your 5-hour and weekly plan usage to its status line command, read from the rate limit headers on its own responses. This works with `CLAUDE_CODE_OAUTH_TOKEN`. Set `ccu statusline` as the status line in `~/.claude/settings.json` and CCU saves those numbers for the dashboard:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "ccu statusline",
+    "refreshInterval": 30
+  }
+}
+```
+
+On its own it prints `5h 24% | 7d 41%`. To keep an existing status line, put its command after `--`, e.g. `ccu statusline -- npx -y ccstatusline@latest`. CCU passes the same JSON through and prints that command's output.
+
+- Numbers only update while Claude Code is making requests, and claude.ai or desktop usage shows up on the next one. The dashboard labels the data with how long ago it last changed
+- Claude Code only re-runs the status line on main-session events, so `refreshInterval` is needed to pick up changes while the main session is idle
+- No per-model weekly bars (the status line doesn't include them)
+
+#### 3. Local JSONL Files (Degraded Fallback)
 
 If OAuth is unavailable, CCU reads from `~/.claude/projects/**/*.jsonl` files and shows a degraded view:
 - Raw session cost and message count (no progress bars or percentages)

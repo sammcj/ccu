@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ccu statusline`: set it as Claude Code's status line command and CCU shows 5-hour and weekly plan usage for `CLAUDE_CODE_OAUTH_TOKEN` (setup-token) users, who can't use the OAuth usage endpoint. It can wrap an existing status line (`ccu statusline -- <command>`), and the dashboard shows how long ago the numbers last changed
+- `/api/status` reports `usage_source` (`oauth` or `statusline`) and `usage_updated_at`
+
 ### Changed
 
 - The 1H Cache comparison on the `Session - Cache Hit` row includes the session cost so far, so the difference has a scale: `[1H Cache: 100% (+$3.93 of $98.12 vs 5m)]`
@@ -11,7 +16,7 @@
 ### Fixed
 
 - The 1H cache comparison measured the gap between requests from the previous response's last transcript line, which can land minutes after the request started. The cache TTL runs from the start of a request, so gaps are now measured from each response's first line, which slightly undercounted 5-minute cache misses before
-- When Claude Code authenticates with `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or a cloud provider, the Keychain OAuth token goes stale and CCU kept saying "run 'claude login'" every 5 minutes. CCU now checks token expiry locally (no doomed API call) and names the env var responsible. For setup-tokens, which can't read plan usage, it says to unset the variable and run `claude login`
+- When Claude Code authenticates with `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or a cloud provider, the Keychain OAuth token goes stale and CCU kept saying "run 'claude login'" every 5 minutes. CCU now checks token expiry locally (no doomed API call) and names the env var responsible. For setup-tokens it points at `ccu statusline`
 
 ## [0.2.17] - 2026-10-09
 

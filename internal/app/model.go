@@ -21,6 +21,7 @@ type AppModel struct {
 	currentSession *models.SessionBlock
 	limits         models.Limits
 	oauthData      *oauth.UsageData // OAuth-fetched usage data
+	statuslineData *oauth.UsageData // `ccu statusline` capture, loaded only while OAuth has no data
 
 	// State
 	loading                 bool
@@ -170,9 +171,35 @@ func (m *AppModel) SetOAuthData(data *oauth.UsageData) {
 	m.oauthData = data
 }
 
-// GetOAuthData returns the OAuth usage data
+// GetOAuthData returns the plan usage data to display: OAuth when available,
+// else the rate limits captured by `ccu statusline`
 func (m *AppModel) GetOAuthData() *oauth.UsageData {
-	return m.oauthData
+	if m.oauthData != nil {
+		return m.oauthData
+	}
+	return m.statuslineData
+}
+
+// usageSourceNote labels plan usage from `ccu statusline`. It is only as fresh
+// as the last Claude Code response, and misses claude.ai and desktop usage in
+// between, so the dashboard shows its age.
+func (m *AppModel) usageSourceNote(now time.Time) string {
+	if m.oauthData != nil || m.statuslineData == nil {
+		return ""
+	}
+	age := now.Sub(m.statuslineData.FetchedAt)
+	var ago string
+	switch {
+	case age < time.Minute:
+		ago = "just now"
+	case age < time.Hour:
+		ago = fmt.Sprintf("%dm ago", int(age.Minutes()))
+	case age < 48*time.Hour:
+		ago = fmt.Sprintf("%dh ago", int(age.Hours()))
+	default:
+		ago = fmt.Sprintf("%dd ago", int(age.Hours()/24))
+	}
+	return "from Claude Code status line, updated " + ago
 }
 
 // DisableOAuth disables OAuth fetching due to a permanent error.

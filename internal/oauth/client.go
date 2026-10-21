@@ -62,7 +62,7 @@ func (e *TokenExpiredError) Error() string {
 	case "":
 		return fmt.Sprintf("Keychain OAuth token expired %s - run 'claude' to refresh it (or 'claude login')", e.ExpiresAt.Local().Format("2 Jan 15:04"))
 	case envOAuthToken:
-		return "Keychain token expired; " + envOAuthToken + " is set so Claude Code isn't refreshing it. Setup-tokens can't read plan usage - unset it and run 'claude login'"
+		return "Keychain token expired; " + envOAuthToken + " is set so Claude Code isn't refreshing it. Set 'ccu statusline' as Claude Code's status line to see plan usage"
 	}
 	return fmt.Sprintf("Keychain token expired; %s is set so Claude Code isn't refreshing it (no plan limits to show)", e.AltAuth)
 }
@@ -252,7 +252,12 @@ type UsageData struct {
 		Utilisation  *float64 `json:"utilization"`
 	} `json:"extra_usage"`
 	FetchedAt time.Time `json:"-"` // When this data was fetched (not from API)
+	Source    string    `json:"-"` // "" for the OAuth API, SourceStatusline for `ccu statusline` captures
 }
+
+// SourceStatusline marks UsageData captured by `ccu statusline` rather than
+// fetched from the OAuth API
+const SourceStatusline = "statusline"
 
 // WeeklyModelLimits returns the weekly limits scoped to an individual model,
 // sorted by Key so bar ordering stays stable across refreshes.
