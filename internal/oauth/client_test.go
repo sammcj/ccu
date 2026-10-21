@@ -2,11 +2,14 @@ package oauth
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // skipIfNotMacOS skips the test if not running on macOS
@@ -327,6 +330,11 @@ func TestRequiresUserAction(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "expired keychain token auto-retries",
+			err:      &TokenExpiredError{AltAuth: "ANTHROPIC_API_KEY"},
+			expected: false,
+		},
+		{
 			name:     "rate limit error does not require user action",
 			err:      &RateLimitError{},
 			expected: false,
@@ -436,6 +444,148 @@ func TestEffectiveFiveHour(t *testing.T) {
 				assert.True(t, resetsAt.Equal(tt.wantResetsAt),
 					"resetsAt = %v, want %v", resetsAt, tt.wantResetsAt)
 			}
+		})
+	}
+}
+
+func fakeEnv(vars map[string]string) func(string) string {
+	return func(name string) string { return vars[name] }
+}
+
+func TestAltAuthEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{name: "nothing set", env: nil, want: ""},
+		{name: "api key", env: map[string]string{"ANTHROPIC_API_KEY": "sk-test"}, want: "ANTHROPIC_API_KEY"},
+		{name: "setup-token", env: map[string]string{envOAuthToken: "tok"}, want: envOAuthToken},
+		{name: "whitespace ignored", env: map[string]string{"ANTHROPIC_API_KEY": "  "}, want: ""},
+		{name: "disabled flag ignored", env: map[string]string{"CLAUDE_CODE_USE_BEDROCK": "0"}, want: ""},
+		{name: "false flag ignored", env: map[string]string{"CLAUDE_CODE_USE_VERTEX": "False"}, want: ""},
+		{
+			name: "follows Claude Code precedence",
+			env:  map[string]string{envOAuthToken: "tok", "ANTHROPIC_API_KEY": "sk-test", "CLAUDE_CODE_USE_BEDROCK": "1"},
+			want: "CLAUDE_CODE_USE_BEDROCK",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, altAuthEnv(fakeEnv(tt.env)))
+		})
+	}
+}
+
+func TestTokenExpiredErrorMessage(t *testing.T) {
+	expiry := time.Date(2026, 10, 20, 9, 0, 0, 0, time.Local)
+	tests := []struct {
+		name     string
+		err      *TokenExpiredError
+		contains string
+		excludes string
+	}{
+		{
+			name:     "no alt auth suggests refreshing via claude",
+			err:      &TokenExpiredError{ExpiresAt: expiry},
+			contains: "expired 20 Oct 09:00 - run 'claude'",
+		},
+		{
+			name:     "api key explains why the token is stale",
+			err:      &TokenExpiredError{ExpiresAt: expiry, AltAuth: "ANTHROPIC_API_KEY"},
+			contains: "ANTHROPIC_API_KEY is set so Claude Code isn't refreshing it",
+			excludes: "claude login",
+		},
+		{
+			name:     "setup-token points at the status line bridge",
+			err:      &TokenExpiredError{ExpiresAt: expiry, AltAuth: envOAuthToken},
+			contains: "Set 'ccu statusline' as Claude Code's status line",
+			excludes: "claude login",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Contains(t, tt.err.Error(), tt.contains)
+			if tt.excludes != "" {
+				assert.NotContains(t, tt.err.Error(), tt.excludes)
+			}
+			assert.ErrorIs(t, tt.err, ErrTokenExpired, "must stay on the auto-retry path")
+		})
+	}
+}
+
+func TestFetchUsageAuthHandling(t *testing.T) {
+	future := time.Now().Add(time.Hour).UnixMilli()
+	past := time.Now().Add(-time.Hour).UnixMilli()
+
+	tests := []struct {
+		name         string
+		token        *ClaudeAiOAuth
+		altAuth      string
+		status       int
+		wantRequests int
+		wantErr      error
+		wantMsg      string
+	}{
+		{
+			name:         "expired token skips the request",
+			token:        &ClaudeAiOAuth{AccessToken: "kc", ExpiresAt: past},
+			altAuth:      "ANTHROPIC_API_KEY",
+			wantRequests: 0,
+			wantErr:      ErrTokenExpired,
+			wantMsg:      "ANTHROPIC_API_KEY is set",
+		},
+		{
+			name:         "revoked token gets the generic message, not the env var",
+			token:        &ClaudeAiOAuth{AccessToken: "kc", ExpiresAt: future},
+			altAuth:      "ANTHROPIC_API_KEY",
+			status:       http.StatusUnauthorized,
+			wantRequests: 1,
+			wantErr:      ErrTokenExpired,
+			wantMsg:      ErrTokenExpired.Error(),
+		},
+		{
+			name:         "token without known expiry is still sent",
+			token:        &ClaudeAiOAuth{AccessToken: "kc"},
+			status:       http.StatusOK,
+			wantRequests: 1,
+		},
+		{
+			name:         "fresh token returns usage",
+			token:        &ClaudeAiOAuth{AccessToken: "kc", ExpiresAt: future},
+			status:       http.StatusOK,
+			wantRequests: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				assert.Equal(t, "Bearer "+tt.token.AccessToken, r.Header.Get("Authorization"))
+				w.WriteHeader(tt.status)
+				if tt.status == http.StatusOK {
+					_, _ = w.Write([]byte(`{"five_hour":{"utilization":42,"resets_at":"2026-10-21T15:00:00Z"}}`))
+				} else {
+					_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"nope"}}`))
+				}
+			}))
+			defer srv.Close()
+
+			client := &Client{httpClient: srv.Client(), token: tt.token, altAuth: tt.altAuth, endpoint: srv.URL}
+			usage, err := client.FetchUsage()
+
+			assert.Equal(t, tt.wantRequests, requests)
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+				assert.InDelta(t, 42, usage.FiveHour.Utilisation, 0.001)
+				return
+			}
+			assert.ErrorIs(t, err, tt.wantErr)
+			assert.Contains(t, err.Error(), tt.wantMsg)
 		})
 	}
 }

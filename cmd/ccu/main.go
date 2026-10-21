@@ -18,6 +18,7 @@ import (
 	"github.com/sammcj/ccu/internal/modelcheck"
 	"github.com/sammcj/ccu/internal/models"
 	"github.com/sammcj/ccu/internal/pricing"
+	"github.com/sammcj/ccu/internal/statusline"
 	"github.com/sammcj/ccu/internal/ui"
 )
 
@@ -29,6 +30,16 @@ var (
 )
 
 func main() {
+	// Run by Claude Code as its status line command, so it must stay fast and
+	// skip flag parsing (wrapped command args would be read as ccu flags)
+	if len(os.Args) > 1 && os.Args[1] == "statusline" {
+		path, err := statusline.DefaultPath()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ccu statusline: %v\n", err)
+		}
+		os.Exit(statusline.Run(os.Args[2:], path, os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	// Set version info in config package for --version flag
 	config.Version = Version
 	config.Commit = Commit

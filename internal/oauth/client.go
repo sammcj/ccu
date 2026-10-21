@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -28,6 +29,47 @@ var (
 	// only re-authenticating fixes this, so it must never auto-retry
 	ErrMissingScope = errors.New("OAuth token lacks required 'user:profile' scope. Try re-authenticating: claude logout && claude login")
 )
+
+const (
+	usageEndpoint = "https://api.anthropic.com/api/oauth/usage"
+	// envOAuthToken holds a token from `claude setup-token`. CCU can't use it:
+	// setup-token always requests user:inference only, and the usage endpoint
+	// needs user:profile.
+	envOAuthToken = "CLAUDE_CODE_OAUTH_TOKEN"
+)
+
+// altAuthEnvVars are the env vars Claude Code prefers over the Keychain login,
+// in its own precedence order. While one is in use Claude Code stops refreshing
+// the Keychain token, so it goes stale.
+var altAuthEnvVars = []string{
+	"CLAUDE_CODE_USE_BEDROCK",
+	"CLAUDE_CODE_USE_VERTEX",
+	"CLAUDE_CODE_USE_FOUNDRY",
+	"ANTHROPIC_AUTH_TOKEN",
+	"ANTHROPIC_API_KEY",
+	envOAuthToken,
+}
+
+// TokenExpiredError wraps ErrTokenExpired with what is known about the stale
+// Keychain token, so the UI can say why it isn't being refreshed.
+type TokenExpiredError struct {
+	ExpiresAt time.Time
+	AltAuth   string // set altAuthEnvVars entry, if any
+}
+
+func (e *TokenExpiredError) Error() string {
+	switch e.AltAuth {
+	case "":
+		return fmt.Sprintf("Keychain OAuth token expired %s - run 'claude' to refresh it (or 'claude login')", e.ExpiresAt.Local().Format("2 Jan 15:04"))
+	case envOAuthToken:
+		return "Keychain token expired; " + envOAuthToken + " is set so Claude Code isn't refreshing it. Set 'ccu statusline' as Claude Code's status line to see plan usage"
+	}
+	return fmt.Sprintf("Keychain token expired; %s is set so Claude Code isn't refreshing it (no plan limits to show)", e.AltAuth)
+}
+
+func (e *TokenExpiredError) Unwrap() error {
+	return ErrTokenExpired
+}
 
 // keychainTimeout bounds the `security` subprocess so a locked keychain's GUI
 // prompt can't block the caller (and the TUI) indefinitely.
@@ -57,6 +99,16 @@ type ClaudeAiOAuth struct {
 	Scopes           []string `json:"scopes"`
 	SubscriptionType *string  `json:"subscriptionType"`
 	RateLimitTier    string   `json:"rateLimitTier"`
+}
+
+// expired reports whether the token is past its expiry. Tokens without a
+// known expiry (ExpiresAt == 0) are never treated as expired.
+func (o *ClaudeAiOAuth) expired(now time.Time) bool {
+	return o.ExpiresAt > 0 && !now.Before(o.expiresAtTime())
+}
+
+func (o *ClaudeAiOAuth) expiresAtTime() time.Time {
+	return time.UnixMilli(o.ExpiresAt)
 }
 
 // DetectPlan returns the CCU plan name derived from keychain credentials.
@@ -200,7 +252,12 @@ type UsageData struct {
 		Utilisation  *float64 `json:"utilization"`
 	} `json:"extra_usage"`
 	FetchedAt time.Time `json:"-"` // When this data was fetched (not from API)
+	Source    string    `json:"-"` // "" for the OAuth API, SourceStatusline for `ccu statusline` captures
 }
+
+// SourceStatusline marks UsageData captured by `ccu statusline` rather than
+// fetched from the OAuth API
+const SourceStatusline = "statusline"
 
 // WeeklyModelLimits returns the weekly limits scoped to an individual model,
 // sorted by Key so bar ordering stays stable across refreshes.
@@ -290,6 +347,8 @@ func (u *UsageData) EffectiveFiveHour(now time.Time) (percent float64, resetsAt 
 type Client struct {
 	httpClient *http.Client
 	token      *ClaudeAiOAuth
+	altAuth    string // set altAuthEnvVars entry, used to explain a stale token
+	endpoint   string
 }
 
 // NewClient creates a new OAuth client
@@ -302,7 +361,22 @@ func NewClient() (*Client, error) {
 	return &Client{
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		token:      token,
+		altAuth:    altAuthEnv(os.Getenv),
+		endpoint:   usageEndpoint,
 	}, nil
+}
+
+// altAuthEnv returns the first set altAuthEnvVars entry, or "" when none are.
+// "0" and "false" count as unset so CLAUDE_CODE_USE_BEDROCK=0 doesn't match.
+func altAuthEnv(getenv func(string) string) string {
+	for _, name := range altAuthEnvVars {
+		switch strings.ToLower(strings.TrimSpace(getenv(name))) {
+		case "", "0", "false":
+			continue
+		}
+		return name
+	}
+	return ""
 }
 
 // getKeychainCredentials retrieves OAuth credentials from macOS Keychain
@@ -333,9 +407,12 @@ func getKeychainCredentials() (*ClaudeAiOAuth, error) {
 
 // FetchUsage retrieves current usage data from Anthropic's OAuth API
 func (c *Client) FetchUsage() (*UsageData, error) {
-	endpoint := "https://api.anthropic.com/api/oauth/usage"
+	// An expired token is a guaranteed 401, so skip the request
+	if c.token.expired(time.Now()) {
+		return nil, &TokenExpiredError{ExpiresAt: c.token.expiresAtTime(), AltAuth: c.altAuth}
+	}
 
-	req, err := http.NewRequest("GET", endpoint, nil)
+	req, err := http.NewRequest("GET", c.endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -440,7 +517,7 @@ func IsAvailable() bool {
 // RequiresUserAction reports whether the error can only be resolved by the user
 // re-authenticating (claude logout && claude login). Token expiry is excluded
 // because Claude Code usually refreshes the token itself, so it stays eligible
-// for auto-retry.
+// for auto-retry. An expired token costs no API call to re-check.
 func RequiresUserAction(err error) bool {
 	return errors.Is(err, ErrMissingScope)
 }

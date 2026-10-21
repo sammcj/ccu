@@ -560,3 +560,34 @@ func TestModelDisplayName(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildStatusResponse_UsageSource(t *testing.T) {
+	now := baseTime
+	build := func(data *oauth.UsageData) StatusResponse {
+		t.Helper()
+		state := &mockState{oauthData: data, limits: newTestLimits(), config: newTestConfig(), lastRefresh: now}
+		raw, err := BuildStatusResponse(state, now)
+		require.NoError(t, err)
+		var resp StatusResponse
+		require.NoError(t, json.Unmarshal(raw, &resp))
+		return resp
+	}
+
+	live := newTestOAuthData(now)
+	live.FetchedAt = now.Add(-time.Minute)
+	resp := build(live)
+	assert.Equal(t, "oauth", resp.UsageSource)
+	assert.Equal(t, "2026-02-18T11:59:00Z", resp.UsageUpdatedAt)
+
+	captured := newTestOAuthData(now)
+	captured.Source = oauth.SourceStatusline
+	captured.FetchedAt = now.Add(-48 * time.Hour)
+	resp = build(captured)
+	assert.Equal(t, "statusline", resp.UsageSource)
+	assert.Equal(t, "2026-02-16T12:00:00Z", resp.UsageUpdatedAt, "age of the numbers, not of the JSONL refresh")
+	assert.Equal(t, 0, resp.DataAgeSeconds)
+
+	resp = build(nil)
+	assert.Empty(t, resp.UsageSource)
+	assert.Empty(t, resp.UsageUpdatedAt)
+}

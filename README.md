@@ -13,7 +13,8 @@ A performant terminal dashboard for monitoring Claude Code usage, built in Go us
 - **Burn Rate Monitoring**: Dual burn rate display - tokens/minute and cost/hour with visual indicators
 - **Intelligent Predictions**: Cost depletion time with colour-coded warnings (red if before reset, orange if close, green if safe)
 - **Plan Support**: Pro, Max5, Max20
-- **Automatic Fallback**: Uses OAuth when available, falls back to JSONL with raw cost/message display (no percentages)
+- **Setup-Token Support**: `ccu statusline` captures plan usage from Claude Code's status line for `CLAUDE_CODE_OAUTH_TOKEN` users, who can't use the OAuth usage API
+- **Automatic Fallback**: Uses OAuth when available, then status line data, then JSONL with raw cost/message display (no percentages)
 - **Model Distribution**: See which models you're using per session (Sonnet, Opus, Haiku)
 
 ## Installation
@@ -90,6 +91,33 @@ ccu -hours=48      # Last 48 hours
 
 - `q` or `Ctrl-C` - Exit the application
 
+### Setup-Token Users (`ccu statusline`)
+
+If Claude Code authenticates with `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), the OAuth usage API rejects the token, so CCU can't fetch plan usage directly. Claude Code still passes your 5-hour and weekly usage to its status line, so make `ccu statusline` the status line command in `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "ccu statusline",
+    "refreshInterval": 30
+  }
+}
+```
+
+On its own it prints `5h 24% | 7d 41%`. To keep an existing status line, put its command after `--` and CCU passes the same JSON through and prints that command's output:
+
+```json
+"command": "ccu statusline -- npx -y ccstatusline@latest"
+```
+
+Each run saves the numbers to `rate-limits.json` in the user cache dir (`~/Library/Caches/ccu/` on macOS). The dashboard uses them whenever OAuth has no data.
+
+- Numbers only update while Claude Code is making requests, and claude.ai or desktop usage shows up on the next one. The dashboard labels the data with how long ago it last changed
+- Claude Code only re-runs the status line on main-session events, so `refreshInterval` is needed to pick up changes while the main session is idle
+- No per-model weekly bars (the status line doesn't include them)
+- API key and cloud provider sessions have no plan limits, so there is nothing to capture
+
 ## HTTP API
 
 CCU can expose its computed metrics over a local HTTP API. This is opt-in and disabled by default.
@@ -139,6 +167,8 @@ Example response (fields are omitted when data is unavailable):
   "plan": "max5",
   "server_time": "2026-02-18T12:00:00Z",
   "data_age_seconds": 15,
+  "usage_source": "oauth",
+  "usage_updated_at": "2026-02-18T11:58:00Z",
   "weekly": {
     "all_models": { "utilisation_pct": 30.5, "resets_at": "2026-02-25T00:00:00Z", "resets_in_seconds": 594000 },
     "scoped": {
@@ -181,7 +211,8 @@ Returns `503` with `{"error":"no data"}` before the first data load completes.
 
 - If both `-api-allow` and `-api-token` are unset, CCU logs a warning at startup. Only do this on a fully trusted, isolated network.
 - IP allowlist is checked before auth so the existence of an auth requirement is not leaked to blocked hosts.
-- `weekly` fields are only present when OAuth is active; they are omitted in JSONL-only mode.
+- `weekly` fields are only present when OAuth or `ccu statusline` data is available; they are omitted in JSONL-only mode.
+- `usage_source` (`oauth` or `statusline`) and `usage_updated_at` say where the plan usage came from and when it last changed. `data_age_seconds` only covers the JSONL refresh, so check `usage_updated_at` for status line data, which can be days old.
 
 The keys of `weekly.scoped` vary by account and change whenever Anthropic adds or drops a per-model weekly limit, so consumers should iterate the map rather than index a fixed key.
 Keys are the lowercased model name, suffixed with `/<surface>` when a limit applies to one surface only (e.g. `fable/web`).
@@ -191,7 +222,7 @@ Only `model` and `utilisation_pct` are guaranteed on each entry: `used_hours` an
 
 ### Data Sources
 
-CCU uses **two data sources** for maximum accuracy:
+CCU uses **three data sources**, in order of preference:
 
 #### 1. OAuth API (Primary - Requires Re-authentication)
 
@@ -207,7 +238,13 @@ claude login
 
 After re-authentication, CCU will automatically use OAuth data when available.
 
-#### 2. Local JSONL Files (Degraded Fallback)
+CCU reads the token from the macOS Keychain. While Claude Code authenticates with `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or a cloud provider, it stops refreshing that token, so CCU falls back to JSONL once it expires. Tokens from `claude setup-token` can't read plan usage from this endpoint (they only carry `user:inference`), so setup-token users need the status line source below.
+
+#### 2. Claude Code Status Line (Setup-Token Users)
+
+Claude Code reads your plan utilisation from the rate limit headers on its own model responses and passes it to the status line command as `rate_limits`. It keeps these values in memory only and hooks don't receive them, so running as the status line is the only way to get them. This works with setup-tokens because no `user:profile` scope is needed. See [Setup-Token Users](#setup-token-users-ccu-statusline) for setup.
+
+#### 3. Local JSONL Files (Degraded Fallback)
 
 If OAuth is unavailable, CCU reads from `~/.claude/projects/**/*.jsonl` files and shows a degraded view:
 - Raw session cost and message count (no progress bars or percentages)
@@ -217,18 +254,19 @@ If OAuth is unavailable, CCU reads from `~/.claude/projects/**/*.jsonl` files an
 
 **Limitations**: JSONL files only contain CLI activity (no web usage). Usage percentages, weekly tracking, predictions, and limit warnings require OAuth. When OAuth fails due to a transient error, CCU automatically retries after 5 minutes.
 
-### OAuth vs JSONL
+### Data Source Comparison
 
-| Feature              | OAuth API    | JSONL Fallback  |
-| -------------------- | ------------ | --------------- |
-| Web + CLI tracking   | ✅ Yes        | ❌ CLI only      |
-| Usage percentages    | ✅ Yes        | ❌ Not available |
-| Weekly limits        | ✅ Yes        | ❌ Not available |
-| Predictions/warnings | ✅ Yes        | ❌ Not available |
-| Burn rates           | ✅ Yes        | ✅ Yes           |
-| Session distribution | ✅ Yes        | ✅ Yes           |
-| Exact reset times    | ✅ Yes        | ⚠️ Estimated     |
-| Setup required       | Re-auth once | None            |
+| Feature                | OAuth API    | Status Line        | JSONL Fallback  |
+| ---------------------- | ------------ | ------------------ | --------------- |
+| Web + CLI tracking     | ✅ Yes        | ⚠️ On next request  | ❌ CLI only      |
+| Usage percentages      | ✅ Yes        | ✅ Yes              | ❌ Not available |
+| Weekly limits          | ✅ Yes        | ⚠️ All models only  | ❌ Not available |
+| Predictions/warnings   | ✅ Yes        | ✅ Yes              | ❌ Not available |
+| Burn rates             | ✅ Yes        | ✅ Yes              | ✅ Yes           |
+| Session distribution   | ✅ Yes        | ✅ Yes              | ✅ Yes           |
+| Exact reset times      | ✅ Yes        | ✅ Yes              | ⚠️ Estimated     |
+| Works with setup-token | ❌ No         | ✅ Yes              | ✅ Yes           |
+| Setup required         | Re-auth once | Status line config | None            |
 
 ### Session Blocks
 
@@ -321,6 +359,7 @@ ccu/
 │   ├── api/          # Optional embedded HTTP API server
 │   ├── app/          # Bubbletea application (MVU pattern)
 │   ├── oauth/        # OAuth client for Anthropic API
+│   ├── statusline/   # `ccu statusline` capture of Claude Code's rate limits
 │   ├── data/         # JSONL reading and parsing (fallback)
 │   ├── analysis/     # Session blocks, burn rate, predictions
 │   ├── models/       # Data structures

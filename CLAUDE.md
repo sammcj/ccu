@@ -3,16 +3,21 @@
 Project-specific context for AI agents working with CCU (Claude Code Usage Monitor).
 
 <ARCHITECTURE>
-Dual data source system:
+Three data sources, in order of preference:
 - **OAuth API** (primary): Live usage from Anthropic's API at `https://api.anthropic.com/api/oauth/usage`
   - Requires OAuth token with `user:profile` scope (re-authenticate: `claude logout && claude login`)
   - Credentials retrieved from macOS Keychain using `security` command
+  - Expired Keychain tokens are rejected locally. When an API key, setup-token or cloud provider env var is set, Claude Code isn't refreshing the token, and the error says so (see `altAuthEnvVars`)
+  - Never use `CLAUDE_CODE_OAUTH_TOKEN` for the usage call: `claude setup-token` hardcodes an inference-only scope, so the endpoint always returns 403
   - Returns exact reset times and combined web + CLI usage
+- **Status line capture** (setup-token users): `ccu statusline` runs as Claude Code's status line command and saves `rate_limits` from its stdin JSON to `rate-limits.json` in the user cache dir. Claude Code holds these values in memory only (hooks don't receive them), so the status line is the only way out
+  - The app loads the file only when OAuth has no data; `AppModel.GetOAuthData()` falls back to it, and `UsageData.Source` marks it
+  - Each Claude Code session sends its own copy, which an idle session replays every `refreshInterval`. `Capture` merges per window (higher usage in the same window, later window wins) and only bumps `updated_at` when numbers change. See `internal/statusline/`
 - **JSONL fallback**: Parses `~/.claude/projects/**/*.jsonl` when OAuth unavailable
   - CLI-only activity (no web usage)
   - Automatically used when OAuth credentials missing or API fails
 
-Data flow: OAuth/JSONL → Analysis (sessions/weekly) → Bubbletea UI
+Data flow: OAuth/status line/JSONL → Analysis (sessions/weekly) → Bubbletea UI
 See `internal/oauth/client.go` for OAuth implementation, `internal/data/` for JSONL parsing.
 </ARCHITECTURE>
 

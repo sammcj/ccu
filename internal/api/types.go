@@ -7,6 +7,8 @@ type StatusResponse struct {
 	Plan           string             `json:"plan"`
 	ServerTime     string             `json:"server_time"`
 	DataAgeSeconds int                `json:"data_age_seconds"`
+	UsageSource    string             `json:"usage_source,omitempty"`     // "oauth" or "statusline"; omitted without plan usage
+	UsageUpdatedAt string             `json:"usage_updated_at,omitempty"` // when the plan usage numbers were fetched or last changed
 	Weekly         *WeeklySection     `json:"weekly,omitempty"`
 	Session        *SessionSection    `json:"session,omitempty"`
 	BurnRate       *BurnRateSection   `json:"burn_rate,omitempty"`

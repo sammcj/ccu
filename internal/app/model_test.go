@@ -543,3 +543,42 @@ func TestRateLimitWarning(t *testing.T) {
 	model.rateLimitWarningExpiry = time.Now().Add(-1 * time.Second)
 	assert.Empty(t, model.GetRateLimitWarning())
 }
+
+func TestGetOAuthDataFallsBackToStatusline(t *testing.T) {
+	live := &oauth.UsageData{}
+	captured := &oauth.UsageData{}
+
+	m := &AppModel{statuslineData: captured}
+	assert.Same(t, captured, m.GetOAuthData(), "status line capture is used while OAuth has no data")
+
+	m.oauthData = live
+	assert.Same(t, live, m.GetOAuthData(), "live OAuth data wins")
+
+	m = &AppModel{}
+	assert.Nil(t, m.GetOAuthData())
+}
+
+func TestUsageSourceNote(t *testing.T) {
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		age  time.Duration
+		want string
+	}{
+		{name: "fresh", age: 20 * time.Second, want: "updated just now"},
+		{name: "minutes", age: 12 * time.Minute, want: "updated 12m ago"},
+		{name: "hours", age: 5*time.Hour + 30*time.Minute, want: "updated 5h ago"},
+		{name: "days", age: 72 * time.Hour, want: "updated 3d ago"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &AppModel{statuslineData: &oauth.UsageData{FetchedAt: now.Add(-tt.age)}}
+			assert.Contains(t, m.usageSourceNote(now), tt.want)
+		})
+	}
+
+	t.Run("no note for live OAuth data", func(t *testing.T) {
+		m := &AppModel{oauthData: &oauth.UsageData{}, statuslineData: &oauth.UsageData{FetchedAt: now}}
+		assert.Empty(t, m.usageSourceNote(now))
+	})
+}

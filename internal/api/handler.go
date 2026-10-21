@@ -43,6 +43,15 @@ func BuildStatusResponse(state StateProvider, now time.Time) ([]byte, error) {
 	// Weekly section – OAuth only
 	if oauthData != nil {
 		resp.Weekly = buildWeeklySection(oauthData, cfg, now)
+		// Status line captures can be days old, which DataAgeSeconds (the JSONL
+		// refresh) doesn't reveal
+		resp.UsageSource = "oauth"
+		if oauthData.Source != "" {
+			resp.UsageSource = oauthData.Source
+		}
+		if !oauthData.FetchedAt.IsZero() {
+			resp.UsageUpdatedAt = oauthData.FetchedAt.UTC().Format(time.RFC3339)
+		}
 	}
 
 	// Session section
