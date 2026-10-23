@@ -577,6 +577,11 @@ func TestUsageSourceNote(t *testing.T) {
 		})
 	}
 
+	t.Run("undated numbers", func(t *testing.T) {
+		m := &AppModel{statuslineData: &oauth.UsageData{}}
+		assert.Contains(t, m.usageSourceNote(now), "age unknown")
+	})
+
 	t.Run("no note for live OAuth data", func(t *testing.T) {
 		m := &AppModel{oauthData: &oauth.UsageData{}, statuslineData: &oauth.UsageData{FetchedAt: now}}
 		assert.Empty(t, m.usageSourceNote(now))

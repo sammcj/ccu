@@ -122,7 +122,8 @@ Each run saves the numbers to `rate-limits.json` in the user cache dir (`~/Libra
 
 Run the dashboard with `ccu -no-oauth` (or `CCU_NO_OAUTH=1`) so it never calls the OAuth usage API, which can't succeed with a setup-token. Without it, CCU already skips the request while the Keychain token is expired. It still calls whenever the Keychain token looks valid.
 
-- Numbers only update while Claude Code is making requests, and claude.ai or desktop usage shows up on the next one. The dashboard labels the data with how long ago it last changed
+- Numbers only update while Claude Code is making requests, and claude.ai or desktop usage shows up on the next one. The dashboard labels the data with how long ago a request last confirmed it, or "age unknown" when the numbers came from a session CCU hasn't yet seen make a request
+- With several sessions open, CCU shows the numbers from the session that most recently got a response, so an idle session can't bring back usage from before an early limit reset. A session it hasn't yet seen make a request only counts when no other session has. Two Claude Code processes on the same session (`claude --resume <id>` in a second terminal) with `refreshInterval` set defeat this: the idle one's stale numbers can look newer than everyone else's
 - Claude Code only re-runs the status line on main-session events, so `refreshInterval` is needed to pick up changes while the main session is idle
 - No per-model weekly bars (the status line doesn't include them)
 - API key and cloud provider sessions have no plan limits, so there is nothing to capture
@@ -221,7 +222,7 @@ Returns `503` with `{"error":"no data"}` before the first data load completes.
 - If both `-api-allow` and `-api-token` are unset, CCU logs a warning at startup. Only do this on a fully trusted, isolated network.
 - IP allowlist is checked before auth so the existence of an auth requirement is not leaked to blocked hosts.
 - `weekly` fields are only present when OAuth or `ccu statusline` data is available; they are omitted in JSONL-only mode.
-- `usage_source` (`oauth` or `statusline`) and `usage_updated_at` say where the plan usage came from and when it last changed. `data_age_seconds` only covers the JSONL refresh, so check `usage_updated_at` for status line data, which can be days old.
+- `usage_source` (`oauth` or `statusline`) and `usage_updated_at` say where the plan usage came from and when it was last confirmed. For status line data, `usage_updated_at` is omitted when no request has confirmed the numbers yet. `data_age_seconds` only covers the JSONL refresh, so check `usage_updated_at` for status line data, which can be days old.
 
 The keys of `weekly.scoped` vary by account and change whenever Anthropic adds or drops a per-model weekly limit, so consumers should iterate the map rather than index a fixed key.
 Keys are the lowercased model name, suffixed with `/<surface>` when a limit applies to one surface only (e.g. `fable/web`).

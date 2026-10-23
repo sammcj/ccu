@@ -188,6 +188,10 @@ func (m *AppModel) usageSourceNote(now time.Time) string {
 	if m.oauthData != nil || m.statuslineData == nil {
 		return ""
 	}
+	if m.statuslineData.FetchedAt.IsZero() {
+		// No response has confirmed the numbers since CCU first saw them
+		return "from Claude Code status line, age unknown"
+	}
 	age := now.Sub(m.statuslineData.FetchedAt)
 	var ago string
 	switch {

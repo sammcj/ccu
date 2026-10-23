@@ -12,7 +12,7 @@ Three data sources, in order of preference:
   - Returns exact reset times and combined web + CLI usage
 - **Status line capture** (setup-token users): `ccu statusline` runs as Claude Code's status line command and saves `rate_limits` from its stdin JSON to `rate-limits.json` in the user cache dir. Claude Code holds these values in memory only (hooks don't receive them), so the status line is the only way out
   - The app loads the file only when OAuth has no data; `AppModel.GetOAuthData()` falls back to it, and `UsageData.Source` marks it
-  - Each Claude Code session sends its own copy, which an idle session replays every `refreshInterval`. `Capture` merges per window (higher usage in the same window, later window wins) and only bumps `updated_at` when numbers change. See `internal/statusline/`
+  - Each Claude Code session sends its own copy, which an idle session replays every `refreshInterval`. The file keeps each session's latest numbers (keyed by `session_id`); `record()` dates them only when `cost.total_api_duration_ms` grows or the numbers change, since first sightings may be replays of any age. `Load` runs `pick()`: the copy known to be most recent (the later of its date and its window's start) wins even with lower usage, because Anthropic can reset a limit early; ties go to highest usage. `Capture` holds an flock on `rate-limits.lock` around its read-modify-write. See `internal/statusline/`
 - **JSONL fallback**: Parses `~/.claude/projects/**/*.jsonl` when OAuth unavailable
   - CLI-only activity (no web usage)
   - Automatically used when OAuth credentials missing or API fails
