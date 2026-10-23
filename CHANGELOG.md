@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `ccu statusline` kept showing the old weekly (or 5-hour) usage after Anthropic reset a limit early, because it always kept the highest number reported in a window. It now keeps each session's numbers and API time from the status line input, and shows the numbers from the session that most recently got a response, so idle sessions still can't replay stale numbers. "Updated X ago" now means when a request last confirmed the numbers, and says "age unknown" when none has. Concurrent status line runs no longer lose each other's update. The rate-limits.json saved by earlier versions is ignored, so after upgrading the dashboard shows status line usage again once Claude Code next runs its status line
+
+## [0.2.24] - 2026-10-23
+
 ### Added
 
 - The 1H Cache comparison on the `Session - Cache Hit` row shows the subagent share on its own when subagents wrote to the 1-hour cache: `(+$3.17 of $181.26 vs 5m; agents +$18.40 of $140.03)`. Subagents rarely idle past 5 minutes, so the 1-hour cache can cost them more than the main conversation. Subagent requests are identified by `isSidechain` in the transcript

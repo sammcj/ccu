@@ -473,7 +473,8 @@ func loadDataCmdWithModel(config *models.Config, model *AppModel) tea.Cmd {
 }
 
 // loadStatuslineData reads the rate limits `ccu statusline` captured. A missing
-// file is the normal case for anyone who hasn't set it up.
+// or empty file is the normal case for anyone who hasn't set it up, or before
+// Claude Code next runs the status line after an upgrade.
 func loadStatuslineData(now time.Time) *oauth.UsageData {
 	path, err := statusline.DefaultPath()
 	if err != nil {
@@ -481,7 +482,7 @@ func loadStatuslineData(now time.Time) *oauth.UsageData {
 	}
 	usage, err := statusline.Load(path, now)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
+		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, statusline.ErrNoUsage) {
 			log.Printf("statusline: %v", err)
 		}
 		return nil
