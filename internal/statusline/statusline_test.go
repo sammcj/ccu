@@ -360,6 +360,24 @@ func TestLoadRollsWindowsForward(t *testing.T) {
 	assert.Equal(t, "2026-11-01T12:00:00Z", usage.SevenDay.ResetsAt)
 }
 
+// Ultra plans have no five-hour limit, so Claude Code only sends seven_day
+func TestLoadWeeklyOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), fileName)
+	weekly := func(apiMS int) string {
+		return fmt.Sprintf(`{"session_id": "s", "cost": {"total_api_duration_ms": %d},
+		"rate_limits": {"seven_day": {"used_percentage": 8, "resets_at": %d}}}`, apiMS, sevenReset)
+	}
+	capture(t, path, weekly(500), captured)
+	// API time grew, so this response confirms the numbers as current
+	capture(t, path, weekly(900), minute(1))
+
+	usage := load(t, path, minute(2))
+	assert.False(t, usage.HasSessionLimit())
+	assert.InDelta(t, 8, usage.SevenDay.Utilisation, 0.001)
+	assert.Equal(t, "2026-10-25T12:00:00Z", usage.SevenDay.ResetsAt)
+	assert.Equal(t, minute(1), usage.FetchedAt)
+}
+
 func TestLoadErrors(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, content string) string {
@@ -370,9 +388,6 @@ func TestLoadErrors(t *testing.T) {
 
 	_, err := Load(filepath.Join(dir, "missing.json"), captured)
 	assert.ErrorIs(t, err, os.ErrNotExist)
-
-	_, err = Load(write("seven-only.json", fmt.Sprintf(`{"sessions":{"a":{"rate_limits":{"seven_day":{"used_percentage":1,"resets_at":%d}}}}}`, sevenReset)), captured)
-	assert.ErrorIs(t, err, ErrNoUsage)
 
 	_, err = Load(write("before-first-response.json", `{"sessions":{"a":{"api_duration_ms":0,"rate_limits":{}}}}`), captured)
 	assert.ErrorIs(t, err, ErrNoUsage)

@@ -134,11 +134,18 @@ func buildSessionSection(session *models.SessionBlock, limits models.Limits, oau
 	// session-rollover staleness clamp the TUI uses: utilisation left over from
 	// the previous 5-hour window reads as 0 until the API catches up. Fall back
 	// to a cost-based estimate only when OAuth data isn't available.
-	var utilisationPct float64
-	if oauthData != nil {
-		utilisationPct, _, _ = oauthData.EffectiveFiveHour(now)
-	} else if limits.CostLimitUSD > 0 {
-		utilisationPct = (session.CostUSD / limits.CostLimitUSD) * 100
+	var utilisationPct *float64
+	switch {
+	case !hasSessionLimit(oauthData, limits):
+		// Left nil so the field is omitted
+	case oauthData != nil:
+		pct, _, _ := oauthData.EffectiveFiveHour(now)
+		utilisationPct = &pct
+	case limits.CostLimitUSD > 0:
+		pct := (session.CostUSD / limits.CostLimitUSD) * 100
+		utilisationPct = &pct
+	default:
+		utilisationPct = new(float64)
 	}
 
 	remainingSeconds := int64(math.Max(0, remaining.Seconds()))
@@ -163,6 +170,15 @@ func buildSessionSection(session *models.SessionBlock, limits models.Limits, oau
 		MessageCount:      session.MessageCount,
 		ModelDistribution: buildModelDist(session),
 	}
+}
+
+// hasSessionLimit trusts OAuth data when present, since the API omits five_hour
+// on plans without a session limit, and otherwise goes by the plan
+func hasSessionLimit(oauthData *oauth.UsageData, limits models.Limits) bool {
+	if oauthData != nil {
+		return oauthData.HasSessionLimit()
+	}
+	return !limits.NoSessionLimit
 }
 
 func buildModelDist(session *models.SessionBlock) []ModelDistEntry {
@@ -210,7 +226,8 @@ func buildPredictionSection(
 	pred := &PredictionSection{}
 
 	// Session cost depletion
-	if currentSession != nil && !currentSession.IsGap && currentSession.CostBurnRate > 0 && limits.CostLimitUSD > 0 {
+	if currentSession != nil && !currentSession.IsGap && currentSession.CostBurnRate > 0 && limits.CostLimitUSD > 0 &&
+		hasSessionLimit(oauthData, limits) {
 		costRemaining := limits.CostLimitUSD - currentSession.CostUSD
 		if costRemaining > 0 {
 			depletionTime := analysis.PredictCostDepletion(currentSession.CostBurnRate, costRemaining, now)

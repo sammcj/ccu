@@ -104,14 +104,12 @@ func RenderDashboard(data DashboardData) string {
 	costBurnRate := analysis.CalculateHourlyCostBurnRate(data.AllSessions, now)
 
 	// Get session reset time for burn rate display
+	// (zero, and so hidden, on plans without a session limit)
 	var sessionResetTime time.Time
-	if data.OAuthData != nil {
-		sessionResetTime, _ = oauth.ParseResetTime(data.OAuthData.FiveHour.ResetsAt)
-		// Adjust if session rolled over
-		if !sessionResetTime.After(now) {
-			sessionResetTime = sessionResetTime.Add(5 * time.Hour)
-		}
-	} else if data.CurrentSession != nil {
+	switch {
+	case data.OAuthData != nil:
+		_, sessionResetTime, _ = data.OAuthData.EffectiveFiveHour(now)
+	case data.CurrentSession != nil && !data.Limits.NoSessionLimit:
 		sessionResetTime = data.CurrentSession.EndTime
 	}
 
@@ -128,13 +126,17 @@ func RenderDashboard(data DashboardData) string {
 
 	// If OAuth available, show OAuth-based session metrics; otherwise degraded fallback
 	if data.OAuthData != nil {
-		output = append(output, renderSessionMetricsFromOAuth(data.OAuthData, sessionDistribution, barWidth, now)...)
+		if data.OAuthData.HasSessionLimit() {
+			output = append(output, renderSessionMetricsFromOAuth(data.OAuthData, sessionDistribution, barWidth, now)...)
+		} else {
+			output = append(output, renderSessionActivity(data.CurrentSession, sessionDistribution))
+		}
 		if data.UsageSourceNote != "" {
 			dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
 			output = append(output, dimStyle.Render("  ("+data.UsageSourceNote+")"))
 		}
 	} else {
-		output = append(output, renderSessionFallback(data.CurrentSession, sessionDistribution, now, data.OAuthUnavailableReason)...)
+		output = append(output, renderSessionFallback(data.CurrentSession, sessionDistribution, now, data.OAuthUnavailableReason, !data.Limits.NoSessionLimit)...)
 	}
 
 	output = append(output, "") // Blank line before prediction
@@ -466,30 +468,33 @@ func isNumeric(s string) bool {
 	return len(s) > 0
 }
 
-// renderSessionFallback renders degraded session info when OAuth is unavailable.
-// Shows raw cost, message count, time before reset, and session distribution
-// but no progress bars or percentages (those require OAuth for accurate limits).
-func renderSessionFallback(session *models.SessionBlock, sessionDistribution string, now time.Time, oauthReason string) []string {
-	var lines []string
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+// renderSessionActivity renders the session's raw cost, message count and model
+// distribution from JSONL data
+func renderSessionActivity(session *models.SessionBlock, sessionDistribution string) string {
 	whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
-
-	// Raw cost and message count
-	costStr := fmt.Sprintf("$%.2f", session.CostUSD)
-	msgStr := fmt.Sprintf("%d messages", session.MessageCount)
 	distStr := ""
 	if sessionDistribution != "" {
 		distStr = " " + sessionDistribution
 	}
-	lines = append(lines, fmt.Sprintf("  💸 Session: %s | %s%s",
-		whiteStyle.Render(costStr),
-		whiteStyle.Render(msgStr),
+	return fmt.Sprintf("  💸 Session: %s | %s%s",
+		whiteStyle.Render(fmt.Sprintf("$%.2f", session.CostUSD)),
+		whiteStyle.Render(fmt.Sprintf("%d messages", session.MessageCount)),
 		distStr,
-	))
+	)
+}
+
+// renderSessionFallback renders degraded session info when OAuth is unavailable.
+// Shows session activity and time before reset but no progress bars or
+// percentages (those require OAuth for accurate limits). showReset is false on
+// plans without a session limit.
+func renderSessionFallback(session *models.SessionBlock, sessionDistribution string, now time.Time, oauthReason string, showReset bool) []string {
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+	whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
+	lines := []string{renderSessionActivity(session, sessionDistribution)}
 
 	// Time before reset (still computable from JSONL session blocks)
 	remaining := session.RemainingDuration(now)
-	if remaining > 0 {
+	if showReset && remaining > 0 {
 		lines = append(lines, fmt.Sprintf("  ⏱️  Time before reset: %s",
 			whiteStyle.Render(fmt.Sprintf("%.1f hours remaining", remaining.Hours())),
 		))

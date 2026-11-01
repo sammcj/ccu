@@ -521,6 +521,11 @@ func isOAuthSessionStale(model *AppModel) bool {
 		return true
 	}
 
+	// Without a session window there is nothing to roll over
+	if !model.oauthData.HasSessionLimit() {
+		return false
+	}
+
 	resetTime, err := oauth.ParseResetTime(model.oauthData.FiveHour.ResetsAt)
 	if err != nil {
 		return true // Force refresh if we can't parse

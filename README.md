@@ -7,12 +7,12 @@ A performant terminal dashboard for monitoring Claude Code usage, built in Go us
 ## Features
 
 - **Live Claude API Usage Data** - Near real-time usage stats from Anthropic's servers with exact reset times
-- **5-Hour Session Tracking**: Monitor rolling 5-hour usage windows with OAuth utilisation percentage
+- **5-Hour Session Tracking**: Monitor rolling 5-hour usage windows with OAuth utilisation percentage (Pro and Max5; Ultra has no session limit)
 - **Weekly Limits**: Track 7-day rolling usage overall, plus a separate bar for each model Anthropic applies an individual weekly limit to
 - **Real-time Dashboard**: Live updating terminal UI with colour-coded progress bars
 - **Burn Rate Monitoring**: Dual burn rate display - tokens/minute and cost/hour with visual indicators
 - **Intelligent Predictions**: Cost depletion time with colour-coded warnings (red if before reset, orange if close, green if safe)
-- **Plan Support**: Pro, Max5, Max20
+- **Plan Support**: Pro, Max5, Ultra (formerly Max20)
 - **Setup-Token Support**: `ccu statusline` captures plan usage from Claude Code's status line for `CLAUDE_CODE_OAUTH_TOKEN` users, who can't use the OAuth usage API
 - **Automatic Fallback**: Uses OAuth when available, then status line data, then JSONL with raw cost/message display (no percentages)
 - **Model Distribution**: See which models you're using per session (Sonnet, Opus, Haiku)
@@ -44,7 +44,7 @@ ccu
 
 # Use a different plan
 ccu -plan=pro
-ccu -plan=max20
+ccu -plan=ultra
 
 # Custom plan with specific limits
 ccu -plan=custom -custom-tokens=50000 -custom-cost=25 -custom-messages=500
@@ -68,7 +68,7 @@ ccu -hours=48      # Last 48 hours
 
 ### Command-Line Flags
 
-- `-plan` - Plan type: `pro`, `max5`, `max20`, `custom` (default: `max5`)
+- `-plan` - Plan type: `pro`, `max5`, `ultra`, `custom` (default: `max5`). `max20` still works as an alias for `ultra`
 - `-view` - View mode: `realtime`, `daily`, `monthly` (default: `realtime`)
 - `-report` - Generate static report to stdout: `daily`, `weekly`, `monthly` (bypasses TUI)
 - `-refresh` - UI refresh rate in seconds, 1-60 (default: `5`). Note: OAuth data is cached for 60 seconds regardless of UI refresh rate
@@ -228,6 +228,8 @@ The keys of `weekly.scoped` vary by account and change whenever Anthropic adds o
 Keys are the lowercased model name, suffixed with `/<surface>` when a limit applies to one surface only (e.g. `fable/web`).
 Only `model` and `utilisation_pct` are guaranteed on each entry: `used_hours` and `limit_hours` are omitted for models with no published hour allowance, since CCU would otherwise have to invent a limit it doesn't know.
 
+On Ultra, which has no 5-hour session limit, `session.utilisation_pct`, `prediction.session_limit_at` and `prediction.session_limit_in_seconds` are omitted, and `prediction.session_will_hit_limit` is always `false`. The other `session` fields still describe the current JSONL activity block.
+
 ## How It Works
 
 ### Data Sources
@@ -340,9 +342,8 @@ As of 2025-12-01
 - Messages: ~1,000 per 5-hour session (estimated)
 - Weekly: ~210 hours Sonnet, ~25 hours Opus
 
-### Max20 Plan
-- Cost: $140 per 5-hour session
-- Messages: ~2,000 per 5-hour session (estimated)
+### Ultra Plan (formerly Max20)
+- No 5-hour session limit, only weekly limits apply
 - Weekly: ~360 hours Sonnet, ~32 hours Opus
 
 ## Customisation

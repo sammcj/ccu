@@ -235,6 +235,7 @@ func TestPredictionAfterSessionReset(t *testing.T) {
 	oauthData := &oauth.UsageData{
 		FetchedAt: now,
 	}
+	oauthData.FiveHour = &oauth.UsageWindow{}
 	oauthData.FiveHour.ResetsAt = resetTime.Format(time.RFC3339)
 	oauthData.FiveHour.Utilisation = 60 // 60% used in 3 hours (session started at 9:00)
 	oauthData.SevenDay.ResetsAt = time.Date(2025, 12, 7, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)
@@ -260,6 +261,7 @@ func TestPredictionNotShownWhenFarAfterReset(t *testing.T) {
 	oauthData := &oauth.UsageData{
 		FetchedAt: now,
 	}
+	oauthData.FiveHour = &oauth.UsageWindow{}
 	oauthData.FiveHour.ResetsAt = resetTime.Format(time.RFC3339)
 	oauthData.FiveHour.Utilisation = 10 // Low usage, depletion far away
 	oauthData.SevenDay.ResetsAt = time.Date(2025, 12, 7, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)
@@ -289,6 +291,7 @@ func TestWeeklyPredictionAfterReset(t *testing.T) {
 		FetchedAt: now,
 	}
 	sessionReset := now.Add(3 * time.Hour) // Session resets in 3h (doesn't matter for weekly)
+	oauthData.FiveHour = &oauth.UsageWindow{}
 	oauthData.FiveHour.ResetsAt = sessionReset.Format(time.RFC3339)
 	oauthData.FiveHour.Utilisation = 30
 	oauthData.SevenDay.ResetsAt = weeklyReset.Format(time.RFC3339)
@@ -311,6 +314,7 @@ func TestWeeklyPredictionPerModelLimit(t *testing.T) {
 	resetStr := weeklyReset.Format(time.RFC3339)
 
 	oauthData := &oauth.UsageData{FetchedAt: now}
+	oauthData.FiveHour = &oauth.UsageWindow{}
 	oauthData.FiveHour.ResetsAt = now.Add(3 * time.Hour).Format(time.RFC3339)
 	oauthData.FiveHour.Utilisation = 20
 	oauthData.SevenDay.ResetsAt = resetStr
@@ -340,6 +344,7 @@ func TestWeeklyPredictionPerModelLimitQuietWhenSafe(t *testing.T) {
 	resetStr := weeklyReset.Format(time.RFC3339)
 
 	oauthData := &oauth.UsageData{FetchedAt: now}
+	oauthData.FiveHour = &oauth.UsageWindow{}
 	oauthData.FiveHour.ResetsAt = now.Add(3 * time.Hour).Format(time.RFC3339)
 	oauthData.FiveHour.Utilisation = 20
 	oauthData.SevenDay.ResetsAt = resetStr
@@ -369,6 +374,7 @@ func TestWeeklyPredictionDateFormat(t *testing.T) {
 		FetchedAt: now,
 	}
 	sessionReset := now.Add(3 * time.Hour)
+	oauthData.FiveHour = &oauth.UsageWindow{}
 	oauthData.FiveHour.ResetsAt = sessionReset.Format(time.RFC3339)
 	oauthData.FiveHour.Utilisation = 20
 	oauthData.SevenDay.ResetsAt = weeklyReset.Format(time.RFC3339)
@@ -509,6 +515,7 @@ func TestWeeklySectionShownWithoutPerModelFields(t *testing.T) {
 	now := time.Now().UTC()
 
 	oauthData := &oauth.UsageData{FetchedAt: now}
+	oauthData.FiveHour = &oauth.UsageWindow{}
 	oauthData.FiveHour.ResetsAt = now.Add(2 * time.Hour).Format(time.RFC3339)
 	oauthData.FiveHour.Utilisation = 10
 	oauthData.SevenDay.ResetsAt = now.Add(4 * 24 * time.Hour).Format(time.RFC3339)
@@ -525,9 +532,50 @@ func TestWeeklySectionShownWithoutPerModelFields(t *testing.T) {
 	assert.NotContains(t, result, "Weekly - Opus:")
 }
 
+// Ultra plans have no 5-hour session limit; the API sends five_hour as null
+func TestRenderDashboardWithoutSessionLimit(t *testing.T) {
+	now := time.Now().UTC()
+	usage := &oauth.UsageData{FetchedAt: now}
+	usage.SevenDay.ResetsAt = now.Add(4 * 24 * time.Hour).Format(time.RFC3339)
+	usage.SevenDay.Utilisation = 8
+	session := &models.SessionBlock{
+		IsActive: true, StartTime: now.Add(-time.Hour), EndTime: now.Add(4 * time.Hour),
+		CostUSD: 3.5, MessageCount: 12,
+	}
+
+	result := ansi.Strip(RenderDashboard(DashboardData{
+		Config:         models.DefaultConfig(),
+		Limits:         models.GetLimits("ultra"),
+		CurrentSession: session,
+		OAuthData:      usage,
+	}))
+	assert.Contains(t, result, "Weekly - All Models:")
+	assert.Contains(t, result, "$3.50", "session activity still shows")
+	assert.Contains(t, result, "12 messages")
+	assert.NotContains(t, result, "Session - Usage:")
+	assert.NotContains(t, result, "Session - Reset:")
+	assert.NotContains(t, result, "Time before reset")
+	for line := range strings.SplitSeq(result, "\n") {
+		if strings.Contains(line, "Burn Rate") {
+			assert.NotContains(t, line, "Resets:", "no session reset on the burn rate row")
+		}
+	}
+
+	// JSONL fallback on the same plan must not invent a session reset either
+	fallback := ansi.Strip(RenderDashboard(DashboardData{
+		Config:         models.DefaultConfig(),
+		Limits:         models.GetLimits("ultra"),
+		CurrentSession: session,
+	}))
+	assert.Contains(t, fallback, "$3.50")
+	assert.NotContains(t, fallback, "Time before reset")
+	assert.NotContains(t, fallback, "Resets:")
+}
+
 func TestUsageSourceNoteRendersWithPlanUsage(t *testing.T) {
 	now := time.Now().UTC()
 	usage := &oauth.UsageData{FetchedAt: now}
+	usage.FiveHour = &oauth.UsageWindow{}
 	usage.FiveHour.ResetsAt = now.Add(2 * time.Hour).Format(time.RFC3339)
 	usage.FiveHour.Utilisation = 10
 	usage.SevenDay.ResetsAt = now.Add(4 * 24 * time.Hour).Format(time.RFC3339)

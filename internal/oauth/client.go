@@ -113,7 +113,7 @@ func (o *ClaudeAiOAuth) expiresAtTime() time.Time {
 
 // DetectPlan returns the CCU plan name derived from keychain credentials.
 // rateLimitTier is checked first (e.g. "default_claude_max_5x") as it
-// distinguishes Max5 from Max20; subscriptionType is a coarser fallback.
+// distinguishes Max5 from Ultra; subscriptionType is a coarser fallback.
 // Returns an empty string when the plan cannot be determined.
 func DetectPlan() string {
 	creds, err := getKeychainCredentials()
@@ -127,8 +127,8 @@ func planFromCredentials(creds *ClaudeAiOAuth) string {
 	switch strings.ToLower(creds.RateLimitTier) {
 	case "default_claude_max_5x":
 		return "max5"
-	case "default_claude_max_20x":
-		return "max20"
+	case "default_claude_max_20x": // Max 20x was renamed Ultra; the tier string was kept
+		return "ultra"
 	case "default_claude_pro":
 		return "pro"
 	}
@@ -136,6 +136,8 @@ func planFromCredentials(creds *ClaudeAiOAuth) string {
 		switch strings.ToLower(*creds.SubscriptionType) {
 		case "pro":
 			return "pro"
+		case "ultra":
+			return "ultra"
 		}
 	}
 	return ""
@@ -224,16 +226,18 @@ func (l Limit) Label() string {
 	return l.ModelName()
 }
 
+// UsageWindow is one rolling usage limit window from the API
+type UsageWindow struct {
+	Utilisation float64 `json:"utilization"`
+	ResetsAt    string  `json:"resets_at"`
+}
+
 // UsageData represents the OAuth API response structure
 type UsageData struct {
-	FiveHour struct {
-		Utilisation float64 `json:"utilization"`
-		ResetsAt    string  `json:"resets_at"`
-	} `json:"five_hour"`
-	SevenDay struct {
-		Utilisation float64 `json:"utilization"`
-		ResetsAt    string  `json:"resets_at"`
-	} `json:"seven_day"`
+	// FiveHour is nil on plans without a 5-hour session limit (Ultra). Read it
+	// via HasSessionLimit and EffectiveFiveHour.
+	FiveHour *UsageWindow `json:"five_hour"`
+	SevenDay UsageWindow  `json:"seven_day"`
 	// Limits supersedes the SevenDaySonnet/SevenDayOpus fields below, which
 	// Anthropic now returns as null. Read it via WeeklyModelLimits.
 	Limits         []Limit `json:"limits"`
@@ -313,6 +317,11 @@ func newScopedWeeklyLimit(displayName string, percent float64, resetsAt *string)
 	}
 }
 
+// HasSessionLimit reports whether the account has a 5-hour session limit
+func (u *UsageData) HasSessionLimit() bool {
+	return u != nil && u.FiveHour != nil
+}
+
 // EffectiveFiveHour returns the five-hour utilisation adjusted for session rollover.
 // When ResetsAt has passed the window has rolled over: resetsAt is advanced by
 // 5 hours and the reported utilisation is checked for plausibility. A new
@@ -320,7 +329,11 @@ func newScopedWeeklyLimit(displayName string, percent float64, resetsAt *string)
 // anything more than double that is stale data from the previous window, so
 // percent is clamped to 0 and stale is true until the API catches up.
 // An unparseable ResetsAt yields the raw utilisation with stale=false.
+// Without a session limit it returns zero values.
 func (u *UsageData) EffectiveFiveHour(now time.Time) (percent float64, resetsAt time.Time, stale bool) {
+	if !u.HasSessionLimit() {
+		return 0, time.Time{}, false
+	}
 	percent = u.FiveHour.Utilisation
 	resetsAt, _ = ParseResetTime(u.FiveHour.ResetsAt)
 

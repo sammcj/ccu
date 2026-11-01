@@ -52,7 +52,7 @@ func TestDataLoadedMsg_OAuthDataRetainedOnLoadError(t *testing.T) {
 	m := *NewModel(models.DefaultConfig())
 
 	oauthData := &oauth.UsageData{FetchedAt: time.Now()}
-	oauthData.FiveHour.Utilisation = 42.0
+	oauthData.FiveHour = &oauth.UsageWindow{Utilisation: 42.0}
 
 	m = applyMsg(t, m, dataLoadedMsg{
 		err:            errors.New("jsonl read failed"),

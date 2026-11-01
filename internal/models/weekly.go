@@ -20,7 +20,7 @@ var PredefinedWeeklyLimits = map[string]WeeklyLimits{
 		SonnetHours: 210, // Using mid-range of 140-280
 		OpusHours:   0,   // Opus weekly limits not currently enforced by Anthropic
 	},
-	"max20": {
+	"ultra": { // Formerly Max 20x
 		SonnetHours: 360, // Using mid-range of 240-480
 		OpusHours:   0,   // Opus weekly limits not currently enforced by Anthropic
 	},

@@ -54,9 +54,10 @@ type WeeklyModelSection struct {
 	WillHitLimit    bool       `json:"will_hit_limit"`
 }
 
-// SessionSection holds current 5-hour session data
+// SessionSection holds current 5-hour session data. UtilisationPct is omitted
+// on plans without a session limit (Ultra); the activity fields remain.
 type SessionSection struct {
-	UtilisationPct    float64          `json:"utilisation_pct"`
+	UtilisationPct    *float64         `json:"utilisation_pct,omitempty"`
 	ResetsAt          string           `json:"resets_at"`
 	ResetsInSeconds   int64            `json:"resets_in_seconds"`
 	ElapsedSeconds    int64            `json:"elapsed_seconds"`

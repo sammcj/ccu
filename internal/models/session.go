@@ -100,6 +100,9 @@ type Limits struct {
 	TokenLimit   int
 	CostLimitUSD float64
 	MessageLimit int
+	// NoSessionLimit marks plans without a 5-hour session limit (Ultra). Only
+	// weekly limits apply; CostLimitUSD then only scales the burn rate bars.
+	NoSessionLimit bool
 }
 
 // PredefinedLimits contains the known plan limits
@@ -118,11 +121,13 @@ var PredefinedLimits = map[string]Limits{
 		CostLimitUSD: 35.0,
 		MessageLimit: 1000,
 	},
-	"max20": {
-		PlanName:     "Max20",
-		TokenLimit:   0, // No per-session token limit
-		CostLimitUSD: 140.0,
-		MessageLimit: 2000,
+	// Formerly Max 20x
+	"ultra": {
+		PlanName:       "Ultra",
+		TokenLimit:     0, // No per-session token limit
+		CostLimitUSD:   140.0,
+		MessageLimit:   2000,
+		NoSessionLimit: true,
 	},
 }
 

@@ -81,17 +81,11 @@ func newTestSession(now time.Time) *models.SessionBlock {
 func newTestOAuthData(now time.Time) *oauth.UsageData {
 	resetsAt := now.Add(4 * 24 * time.Hour).Format(time.RFC3339Nano)
 	return &oauth.UsageData{
-		FiveHour: struct {
-			Utilisation float64 `json:"utilization"`
-			ResetsAt    string  `json:"resets_at"`
-		}{
+		FiveHour: &oauth.UsageWindow{
 			Utilisation: 45.0,
 			ResetsAt:    now.Add(3 * time.Hour).Format(time.RFC3339Nano),
 		},
-		SevenDay: struct {
-			Utilisation float64 `json:"utilization"`
-			ResetsAt    string  `json:"resets_at"`
-		}{
+		SevenDay: oauth.UsageWindow{
 			Utilisation: 30.0,
 			ResetsAt:    resetsAt,
 		},
@@ -302,7 +296,8 @@ func TestBuildStatusResponse_FullData(t *testing.T) {
 
 	// Session section – utilisation comes from OAuth FiveHour.Utilisation (45%), not local cost
 	require.NotNil(t, resp.Session)
-	assert.InDelta(t, 45.0, resp.Session.UtilisationPct, 0.01)
+	require.NotNil(t, resp.Session.UtilisationPct)
+	assert.InDelta(t, 45.0, *resp.Session.UtilisationPct, 0.01)
 	assert.Equal(t, 42, resp.Session.MessageCount)
 	assert.Greater(t, resp.Session.ElapsedSeconds, int64(0))
 	assert.Greater(t, resp.Session.TotalSeconds, int64(0))
@@ -414,17 +409,11 @@ func TestBuildStatusResponse_WeeklyPredictionPresentWhenWillHitLimitFalse(t *tes
 	weekStart := now.Add(-48 * time.Hour) // 48h into the week
 	resetsAt := weekStart.Add(7 * 24 * time.Hour).Format(time.RFC3339Nano)
 	oauthData := &oauth.UsageData{
-		FiveHour: struct {
-			Utilisation float64 `json:"utilization"`
-			ResetsAt    string  `json:"resets_at"`
-		}{
+		FiveHour: &oauth.UsageWindow{
 			Utilisation: 10.0,
 			ResetsAt:    now.Add(3 * time.Hour).Format(time.RFC3339Nano),
 		},
-		SevenDay: struct {
-			Utilisation float64 `json:"utilization"`
-			ResetsAt    string  `json:"resets_at"`
-		}{
+		SevenDay: oauth.UsageWindow{
 			Utilisation: 5.0, // low: won't hit limit before reset
 			ResetsAt:    resetsAt,
 		},
@@ -474,18 +463,12 @@ func TestBuildStatusResponse_SessionStalenessClamp(t *testing.T) {
 	}
 
 	oauthData := &oauth.UsageData{
-		FiveHour: struct {
-			Utilisation float64 `json:"utilization"`
-			ResetsAt    string  `json:"resets_at"`
-		}{
+		FiveHour: &oauth.UsageWindow{
 			// ResetsAt is 10 minutes in the past → session rolled over
 			Utilisation: 85.0,
 			ResetsAt:    rolloverTime.Format(time.RFC3339Nano),
 		},
-		SevenDay: struct {
-			Utilisation float64 `json:"utilization"`
-			ResetsAt    string  `json:"resets_at"`
-		}{
+		SevenDay: oauth.UsageWindow{
 			Utilisation: 20.0,
 			ResetsAt:    now.Add(4 * 24 * time.Hour).Format(time.RFC3339Nano),
 		},
@@ -512,7 +495,8 @@ func TestBuildStatusResponse_SessionStalenessClamp(t *testing.T) {
 	require.NotNil(t, resp.Session)
 	// 10 minutes into a 5-hour session → maxReasonable = (10/60/5)*100 ≈ 3.3%
 	// Raw utilisation 85.7% (30/35*100) >> 3.3%*2 → must be clamped to 0
-	assert.Equal(t, 0.0, resp.Session.UtilisationPct, "stale utilisation must be clamped to 0")
+	require.NotNil(t, resp.Session.UtilisationPct)
+	assert.Equal(t, 0.0, *resp.Session.UtilisationPct, "stale utilisation must be clamped to 0")
 }
 
 func TestBuildStatusResponse_SessionStalenessNotAppliedWhenFresh(t *testing.T) {
@@ -539,7 +523,51 @@ func TestBuildStatusResponse_SessionStalenessNotAppliedWhenFresh(t *testing.T) {
 
 	require.NotNil(t, resp.Session)
 	// Utilisation comes from OAuth FiveHour.Utilisation (45%) since OAuth data is present
-	assert.InDelta(t, 45.0, resp.Session.UtilisationPct, 0.01)
+	require.NotNil(t, resp.Session.UtilisationPct)
+	assert.InDelta(t, 45.0, *resp.Session.UtilisationPct, 0.01)
+}
+
+// Ultra plans have no 5-hour session limit: the session section keeps its
+// activity data but reports no utilisation or session depletion prediction
+func TestBuildStatusResponse_NoSessionLimit(t *testing.T) {
+	now := baseTime
+	weeklyOnly := newTestOAuthData(now)
+	weeklyOnly.FiveHour = nil
+
+	tests := []struct {
+		name  string
+		oauth *oauth.UsageData
+	}{
+		{"oauth without five_hour", weeklyOnly},
+		{"jsonl fallback on ultra", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := newTestSession(now)
+			state := &mockState{
+				oauthData:      tt.oauth,
+				currentSession: session,
+				sessions:       []models.SessionBlock{*session},
+				limits:         models.GetLimits("ultra"),
+				config:         newTestConfig(),
+				lastRefresh:    now,
+				hasData:        true,
+			}
+
+			raw, err := BuildStatusResponse(state, now)
+			require.NoError(t, err)
+			var resp StatusResponse
+			require.NoError(t, json.Unmarshal(raw, &resp))
+
+			assert.Equal(t, "ultra", resp.Plan)
+			require.NotNil(t, resp.Session)
+			assert.Nil(t, resp.Session.UtilisationPct)
+			assert.Equal(t, 42, resp.Session.MessageCount)
+			require.NotNil(t, resp.Prediction)
+			assert.Nil(t, resp.Prediction.SessionLimitAt)
+			assert.False(t, resp.Prediction.SessionWillHitLimit)
+		})
+	}
 }
 
 func TestModelDisplayName(t *testing.T) {

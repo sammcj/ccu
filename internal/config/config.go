@@ -25,7 +25,7 @@ func ParseFlags() (*models.Config, error) {
 	config := models.DefaultConfig()
 
 	// Define flags
-	plan := flag.String("plan", "max5", "Plan type: pro, max5, max20, custom")
+	plan := flag.String("plan", "max5", "Plan type: pro, max5, ultra (formerly max20), custom")
 	viewMode := flag.String("view", "realtime", "View mode: realtime, daily, monthly")
 	reportMode := flag.String("report", "", "Generate static report to stdout: daily, weekly, monthly (bypasses TUI)")
 	refreshRate := flag.Int("refresh", 30, "UI refresh rate in seconds (1-60, default 30 for JSONL, 60 for OAuth). OAuth API calls are independently gated to every 4 minutes")
@@ -87,16 +87,14 @@ func ParseFlags() (*models.Config, error) {
 		}
 	}
 
-	// Validate and set plan
-	switch *plan {
-	case "pro", "max5", "max20", "custom":
-		config.Plan = *plan
-	default:
-		return nil, fmt.Errorf("invalid plan: %s (must be pro, max5, max20, or custom)", *plan)
+	resolved, err := resolvePlan(*plan)
+	if err != nil {
+		return nil, err
 	}
+	config.Plan = resolved
 
 	// Set custom limits if plan is custom
-	if *plan == "custom" {
+	if config.Plan == "custom" {
 		if *customTokens > 0 {
 			config.CustomToken = *customTokens
 		}
@@ -204,6 +202,18 @@ func ParseFlags() (*models.Config, error) {
 	}
 
 	return config, nil
+}
+
+// resolvePlan validates a plan name. Anthropic renamed Max 20x to Ultra, so
+// "max20" still works for existing scripts and aliases.
+func resolvePlan(plan string) (string, error) {
+	switch plan {
+	case "max20":
+		return "ultra", nil
+	case "pro", "max5", "ultra", "custom":
+		return plan, nil
+	}
+	return "", fmt.Errorf("invalid plan: %s (must be pro, max5, ultra, or custom)", plan)
 }
 
 // resolveAPIPort picks the API port using precedence: explicit CLI flag > env var > flag default.

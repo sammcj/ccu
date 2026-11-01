@@ -14,7 +14,7 @@ func TestWeeklyHoursForModel(t *testing.T) {
 		want        float64
 	}{
 		{name: "sonnet on max5", plan: "max5", displayName: "Sonnet", want: 210},
-		{name: "sonnet on max20", plan: "max20", displayName: "Sonnet", want: 360},
+		{name: "sonnet on ultra", plan: "ultra", displayName: "Sonnet", want: 360},
 		{name: "sonnet on pro", plan: "pro", displayName: "Sonnet", want: 60},
 		{name: "display name is matched case insensitively", plan: "max5", displayName: "sonnet 4.5", want: 210},
 		{name: "opus has no published allowance", plan: "max5", displayName: "Opus", want: 0},

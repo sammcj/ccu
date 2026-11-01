@@ -360,17 +360,18 @@ func readSnapshot(path string) (*snapshot, error) {
 	return &s, nil
 }
 
-// ErrNoUsage means the file holds no five-hour window yet: it was saved before
+// ErrNoUsage means the file holds no rate limit window yet: it was saved before
 // sessions were tracked, or only by sessions before their first response or
 // without plan limits
-var ErrNoUsage = errors.New("no five-hour window recorded")
+var ErrNoUsage = errors.New("no rate limit window recorded")
 
 // Load returns the saved rate limits as UsageData so the dashboard renders
 // them like OAuth data. FetchedAt is when a response last confirmed the older
 // of the chosen windows, or zero when either is undated. A window that reset since is reported as 0% with
 // its next reset: any Claude Code activity since then would have written newer
 // numbers. Captures can be days old, unlike OAuth data, so this can't be left
-// to UsageData.EffectiveFiveHour.
+// to UsageData.EffectiveFiveHour. Without a five-hour window FiveHour stays
+// nil, as it does for OAuth data on plans with no session limit (Ultra).
 func Load(path string, now time.Time) (*oauth.UsageData, error) {
 	s, err := readSnapshot(path)
 	if err != nil {
@@ -378,16 +379,19 @@ func Load(path string, now time.Time) (*oauth.UsageData, error) {
 	}
 	five, fiveFrom := s.pick(func(r rateLimits) *window { return r.FiveHour }, fiveHours)
 	seven, sevenFrom := s.pick(func(r rateLimits) *window { return r.SevenDay }, week)
-	// The dashboard has no meaningful rendering without a five-hour window
-	if !five.valid() {
+	if !five.valid() && !seven.valid() {
 		return nil, fmt.Errorf("%s: %w", path, ErrNoUsage)
 	}
 
-	usage := &oauth.UsageData{FetchedAt: fiveFrom.CalledAt, Source: oauth.SourceStatusline}
-	usage.FiveHour.Utilisation, usage.FiveHour.ResetsAt = rollForward(five, fiveHours, now)
+	usage := &oauth.UsageData{Source: oauth.SourceStatusline}
+	if five.valid() {
+		usage.FiveHour = &oauth.UsageWindow{}
+		usage.FiveHour.Utilisation, usage.FiveHour.ResetsAt = rollForward(five, fiveHours, now)
+		usage.FetchedAt = fiveFrom.CalledAt
+	}
 	if seven.valid() {
 		usage.SevenDay.Utilisation, usage.SevenDay.ResetsAt = rollForward(seven, week, now)
-		if sevenFrom.CalledAt.Before(usage.FetchedAt) {
+		if !five.valid() || sevenFrom.CalledAt.Before(usage.FetchedAt) {
 			usage.FetchedAt = sevenFrom.CalledAt
 		}
 	}

@@ -16,6 +16,32 @@ import (
 // tests hermetic and repeatable. resolveAPIPort covers the CLI-flag/env-var
 // precedence and invalid-port fallback logic used by ParseFlags.
 
+func TestResolvePlan(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{in: "pro", want: "pro"},
+		{in: "max5", want: "max5"},
+		{in: "ultra", want: "ultra"},
+		{in: "max20", want: "ultra"}, // Max 20x was renamed Ultra
+		{in: "custom", want: "custom"},
+		{in: "enterprise", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got, err := resolvePlan(tt.in)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestResolveAPIPort(t *testing.T) {
 	const flagDefault = 19840
 

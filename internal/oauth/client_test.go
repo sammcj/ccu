@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -432,9 +433,7 @@ func TestEffectiveFiveHour(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data := &UsageData{}
-			data.FiveHour.ResetsAt = tt.resetsAt
-			data.FiveHour.Utilisation = tt.utilisation
+			data := &UsageData{FiveHour: &UsageWindow{ResetsAt: tt.resetsAt, Utilisation: tt.utilisation}}
 
 			percent, resetsAt, stale := data.EffectiveFiveHour(now)
 
@@ -444,6 +443,52 @@ func TestEffectiveFiveHour(t *testing.T) {
 				assert.True(t, resetsAt.Equal(tt.wantResetsAt),
 					"resetsAt = %v, want %v", resetsAt, tt.wantResetsAt)
 			}
+		})
+	}
+}
+
+// Ultra plans have no 5-hour session limit; the API sends five_hour as null.
+func TestUsageDataWithoutSessionLimit(t *testing.T) {
+	body := `{"five_hour": null, "seven_day": {"utilization": 8.0, "resets_at": "2026-11-06T04:00:00.462922+00:00"}}`
+	var data UsageData
+	require.NoError(t, json.Unmarshal([]byte(body), &data))
+
+	assert.False(t, data.HasSessionLimit())
+	assert.InDelta(t, 8.0, data.SevenDay.Utilisation, 0.001)
+
+	percent, resetsAt, stale := data.EffectiveFiveHour(time.Now())
+	assert.Zero(t, percent)
+	assert.True(t, resetsAt.IsZero(), "no session window means no reset time")
+	assert.False(t, stale)
+}
+
+func TestUsageDataWithSessionLimit(t *testing.T) {
+	body := `{"five_hour": {"utilization": 12.0, "resets_at": "2026-11-01T04:00:00+00:00"}}`
+	var data UsageData
+	require.NoError(t, json.Unmarshal([]byte(body), &data))
+
+	assert.True(t, data.HasSessionLimit())
+	assert.InDelta(t, 12.0, data.FiveHour.Utilisation, 0.001)
+}
+
+func TestPlanFromCredentials(t *testing.T) {
+	str := func(s string) *string { return &s }
+	tests := []struct {
+		name  string
+		creds ClaudeAiOAuth
+		want  string
+	}{
+		{"pro tier", ClaudeAiOAuth{RateLimitTier: "default_claude_pro"}, "pro"},
+		{"max 5x tier", ClaudeAiOAuth{RateLimitTier: "default_claude_max_5x"}, "max5"},
+		// Anthropic renamed Max 20x to Ultra but kept the tier string
+		{"max 20x tier is ultra", ClaudeAiOAuth{RateLimitTier: "default_claude_max_20x"}, "ultra"},
+		{"pro subscription fallback", ClaudeAiOAuth{SubscriptionType: str("Pro")}, "pro"},
+		{"ultra subscription fallback", ClaudeAiOAuth{SubscriptionType: str("ultra")}, "ultra"},
+		{"unknown", ClaudeAiOAuth{RateLimitTier: "something_new"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, planFromCredentials(&tt.creds))
 		})
 	}
 }

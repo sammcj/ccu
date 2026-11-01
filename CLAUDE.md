@@ -52,6 +52,9 @@ rather than deriving hours from a limit we don't know. `ui.GetModelColour()` fal
 **Time handling**: All times converted to UTC. Session blocks round start times DOWN to current hour.
 
 **Plan limits**: Claude has NO per-5-hour-session token limits. The ~200k context window is per-conversation, not per-session. `TokenLimit` field in `models.Limits` is always 0 for predefined plans.
+
+**Ultra has no 5-hour session limit**: Anthropic renamed Max 20x to Ultra and dropped its session limit, but kept the `default_claude_max_20x` tier string. The usage API returns `five_hour: null` and Claude Code's status line sends only `seven_day`. `UsageData.FiveHour` is a pointer for this reason: check `HasSessionLimit()` before reading it (`EffectiveFiveHour` already returns zero values). In JSONL mode there's no API signal, so `Limits.NoSessionLimit` stands in. `-plan=max20` is an alias for `ultra`.
+  - Known trade-off: Claude Code drops `five_hour` from the status line once it resets, so a Pro/Max5 status line capture can briefly hold only `seven_day` and read as "no session limit". The next response corrects it. Gating on the plan isn't reliable, because setup-token users often have no Keychain tier and default to `max5`.
 </CONVENTIONS>
 
 <GOTCHAS>

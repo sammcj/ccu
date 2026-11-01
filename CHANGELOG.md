@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Ultra plan (formerly Max 20x), which has no 5-hour session limit. Detected from the unchanged `default_claude_max_20x` tier, or set with `-plan=ultra` (`-plan=max20` still works). The dashboard hides the session usage, reset and prediction rows and keeps the session cost and message count
+
+### Changed
+
+- `/api/status` `plan` is now `ultra` instead of `max20`. On Ultra it omits `session.utilisation_pct`, `prediction.session_limit_at` and `prediction.session_limit_in_seconds`
+
+### Fixed
+
+- A null `five_hour` from the usage API no longer shows a 0% session bar with a bogus reset time, or forces an OAuth refresh every minute
+- `ccu statusline` captures with only weekly usage now load. Previously the dashboard ignored them and fell back to JSONL
+
+## [0.2.25] - 2026-11-01
+
 ### Fixed
 
 - `ccu statusline` kept showing the old weekly (or 5-hour) usage after Anthropic reset a limit early, because it always kept the highest number reported in a window. It now keeps each session's numbers and API time from the status line input, and shows the numbers from the session that most recently got a response, so idle sessions still can't replay stale numbers. "Updated X ago" now means when a request last confirmed the numbers, and says "age unknown" when none has. Concurrent status line runs no longer lose each other's update. The rate-limits.json saved by earlier versions is ignored, so after upgrading the dashboard shows status line usage again once Claude Code next runs its status line
