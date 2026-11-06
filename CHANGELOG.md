@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- On Ultra, the session cost and cache hit rows are labelled `Last 5h` and `Last 5h - Cache Hit`, since the plan has no sessions. They keep the `Session` label once the 5-hour block has ended
+
+### Fixed
+
+- The session cost row (shown on Ultra and without OAuth) and the time before reset row now line up with the other dashboard rows. The model distribution moves to the suffix column and clips to the terminal width
+- The `Burn Rate - Cost` row no longer gets cut off with `…` when it has no reset time, which happened on Ultra at narrower terminal widths
+
+## [0.2.26] - 2026-11-05
+
 ### Added
 
 - Ultra plan (formerly Max 20x), which has no 5-hour session limit. Detected from the unchanged `default_claude_max_20x` tier, or set with `-plan=ultra` (`-plan=max20` still works). The dashboard hides the session usage, reset and prediction rows and keeps the session cost and message count

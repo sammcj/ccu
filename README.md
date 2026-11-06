@@ -88,7 +88,7 @@ ccu -hours=48      # Last 48 hours
 
 ### Keys
 
-- `a` - Toggle advanced detail: the 1H cache cost comparison on the `Session - Cache Hit` row
+- `a` - Toggle advanced detail: the 1H cache cost comparison on the `Session - Cache Hit` row (`Last 5h - Cache Hit` on Ultra)
 - `r` or space - Refresh now
 - `q` or `ctrl+c` - Quit
 - `-help` - Show help message
@@ -343,7 +343,7 @@ As of 2025-12-01
 - Weekly: ~210 hours Sonnet, ~25 hours Opus
 
 ### Ultra Plan (formerly Max20)
-- No 5-hour session limit, only weekly limits apply
+- No 5-hour session limit, only weekly limits apply. Rows for the current 5-hour block of activity are labelled `Last 5h` instead of `Session`
 - Weekly: ~360 hours Sonnet, ~32 hours Opus
 
 ## Customisation

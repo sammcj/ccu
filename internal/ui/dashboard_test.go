@@ -51,6 +51,96 @@ func TestClipRow(t *testing.T) {
 	})
 }
 
+func TestSessionRowLabels(t *testing.T) {
+	limited := &oauth.UsageData{FetchedAt: time.Now(), FiveHour: &oauth.UsageWindow{}}
+	unlimited := &oauth.UsageData{FetchedAt: time.Now()}
+
+	tests := []struct {
+		name      string
+		plan      string
+		oauthData *oauth.UsageData
+		age       time.Duration
+		wantLast  bool
+	}{
+		{name: "ultra without oauth", plan: "ultra", wantLast: true},
+		{name: "ultra with oauth", plan: "ultra", oauthData: unlimited, wantLast: true},
+		{name: "max20 alias", plan: "max20", oauthData: unlimited, wantLast: true},
+		{name: "api signal beats a default plan", plan: "max5", oauthData: unlimited, wantLast: true},
+		{name: "api session limit beats the plan", plan: "ultra", oauthData: limited},
+		{name: "ended block is not the last 5 hours", plan: "ultra", oauthData: unlimited, age: 10 * time.Hour},
+		{name: "plan with a session limit", plan: "max5"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocks := analysis.CreateSessionBlocks([]models.UsageEntry{{
+				Timestamp:       time.Now().UTC().Add(-tt.age),
+				Model:           "claude-opus-4-5",
+				InputTokens:     10,
+				CacheReadTokens: 90,
+			}})
+			require.Len(t, blocks, 1)
+
+			result := ansi.Strip(RenderDashboard(DashboardData{
+				Config:         models.DefaultConfig(),
+				Limits:         models.GetLimits(tt.plan),
+				CurrentSession: &blocks[0],
+				OAuthData:      tt.oauthData,
+			}))
+
+			if tt.wantLast {
+				assert.Contains(t, result, "Last 5h - Cache Hit:")
+				assert.Contains(t, result, "Last 5h:")
+				assert.NotContains(t, result, "Session")
+				return
+			}
+			assert.Contains(t, result, "Session - Cache Hit:")
+			assert.NotContains(t, result, "Last 5h")
+		})
+	}
+}
+
+func TestBurnRateRowsClipIndependently(t *testing.T) {
+	// No session limit means no reset suffix, which is when both rows hit the
+	// plain clipping path. 130 columns fits each row but not the two combined.
+	result := ansi.Strip(RenderDashboard(DashboardData{
+		Config:         models.DefaultConfig(),
+		Limits:         models.GetLimits("ultra"),
+		CurrentSession: &models.SessionBlock{},
+		Width:          130,
+	}))
+
+	assert.Contains(t, result, "/min")
+	assert.Contains(t, result, "/hr", "cost row keeps its value")
+}
+
+func TestSessionActivityUsesRowColumns(t *testing.T) {
+	session := &models.SessionBlock{CostUSD: 9.35, MessageCount: 72}
+	labelJump := fmt.Sprintf("\x1b[%dG", colPosLabel)
+	barJump := fmt.Sprintf("\x1b[%dG", colPosBar)
+
+	got := renderSessionActivity(session, "Session", "[Opus 5.5: 100.0%]")
+
+	assert.True(t, strings.HasPrefix(got, "\x1b[2K💸"+labelJump+"Session:"), "emoji and label start where other rows do")
+	assert.Contains(t, got, barJump)
+	assert.Contains(t, got, suffixJump+"[Opus 5.5: 100.0%]")
+	assert.Contains(t, ansi.Strip(got), "$9.35 | 72 messages")
+
+	assert.NotContains(t, renderSessionActivity(session, "Session", ""), suffixJump, "no distribution, no suffix column")
+}
+
+func TestSessionFallbackResetRowUsesRowColumns(t *testing.T) {
+	now := time.Now()
+	session := &models.SessionBlock{EndTime: now.Add(2 * time.Hour)}
+	labelJump := fmt.Sprintf("\x1b[%dG", colPosLabel)
+
+	lines := renderSessionFallback("", session, now, "", true)
+
+	require.GreaterOrEqual(t, len(lines), 2)
+	assert.True(t, strings.HasPrefix(lines[1], "\x1b[2K⏱️"+labelJump+"Time before reset:"))
+	assert.Contains(t, ansi.Strip(lines[1]), "2.0 hours remaining")
+}
+
 func TestFormatModelNameSimple(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -489,7 +579,7 @@ func TestRenderSessionCacheHitRate(t *testing.T) {
 	blocks := analysis.CreateSessionBlocks(entries)
 	assert.Len(t, blocks, 1)
 
-	got := renderSessionCacheHitRate(&blocks[0], barWidth, true)
+	got := renderSessionCacheHitRate(&blocks[0], "Session", barWidth, true)
 
 	// Token classes summed by hand from the entries above: the per-model
 	// aggregates must produce the same rendered line the entry loop did.
@@ -503,9 +593,9 @@ func TestRenderSessionCacheHitRate(t *testing.T) {
 func TestRenderSessionCacheHitRateNoActivity(t *testing.T) {
 	// Width is irrelevant with no activity; a narrower bar also exercises the parameter
 	const barWidth = 30
-	assert.Empty(t, renderSessionCacheHitRate(nil, barWidth, true))
-	assert.Empty(t, renderSessionCacheHitRate(&models.SessionBlock{IsGap: true}, barWidth, true))
-	assert.Empty(t, renderSessionCacheHitRate(&models.SessionBlock{}, barWidth, true))
+	assert.Empty(t, renderSessionCacheHitRate(nil, "Session", barWidth, true))
+	assert.Empty(t, renderSessionCacheHitRate(&models.SessionBlock{IsGap: true}, "Session", barWidth, true))
+	assert.Empty(t, renderSessionCacheHitRate(&models.SessionBlock{}, "Session", barWidth, true))
 }
 
 func TestWeeklySectionShownWithoutPerModelFields(t *testing.T) {

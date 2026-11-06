@@ -113,11 +113,13 @@ func RenderDashboard(data DashboardData) string {
 		sessionResetTime = data.CurrentSession.EndTime
 	}
 
-	// Show burn rates on one line
-	output = append(output, renderBurnRates(burnRate, costBurnRate, data.Limits, barWidth, sessionResetTime))
+	// Burn rate rows (token and cost)
+	output = append(output, renderBurnRates(burnRate, costBurnRate, data.Limits, barWidth, sessionResetTime)...)
+
+	rowLabel := sessionRowLabel(data, now)
 
 	// Session cache hit rate — JSONL-derived, available regardless of OAuth status
-	if line := renderSessionCacheHitRate(data.CurrentSession, barWidth, data.Advanced); line != "" {
+	if line := renderSessionCacheHitRate(data.CurrentSession, rowLabel, barWidth, data.Advanced); line != "" {
 		output = append(output, line)
 	}
 
@@ -129,14 +131,15 @@ func RenderDashboard(data DashboardData) string {
 		if data.OAuthData.HasSessionLimit() {
 			output = append(output, renderSessionMetricsFromOAuth(data.OAuthData, sessionDistribution, barWidth, now)...)
 		} else {
-			output = append(output, renderSessionActivity(data.CurrentSession, sessionDistribution))
+			output = append(output, renderSessionActivity(data.CurrentSession, rowLabel, sessionDistribution))
 		}
 		if data.UsageSourceNote != "" {
 			dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
 			output = append(output, dimStyle.Render("  ("+data.UsageSourceNote+")"))
 		}
 	} else {
-		output = append(output, renderSessionFallback(data.CurrentSession, sessionDistribution, now, data.OAuthUnavailableReason, !data.Limits.NoSessionLimit)...)
+		activityRow := renderSessionActivity(data.CurrentSession, rowLabel, sessionDistribution)
+		output = append(output, renderSessionFallback(activityRow, data.CurrentSession, now, data.OAuthUnavailableReason, !data.Limits.NoSessionLimit)...)
 	}
 
 	output = append(output, "") // Blank line before prediction
@@ -344,8 +347,8 @@ func cacheEfficiencyStyle(saving float64) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(colour)
 }
 
-// renderBurnRates renders token and cost burn rates on one line
-func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, barWidth int, sessionResetTime time.Time) string {
+// renderBurnRates renders the token and cost burn rate rows
+func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, barWidth int, sessionResetTime time.Time) []string {
 	// Calculate what percentage of limit the burn rate represents
 	// For a reasonable scale, let's assume max comfortable burn rate is hitting limit in 2 hours
 	// So: maxBurnRate = limit / 120 minutes
@@ -416,7 +419,7 @@ func renderBurnRates(tokenBurnRate, costBurnRate float64, limits models.Limits, 
 		costValueStyle.Render(fmt.Sprintf("$%.2f/hr", costPerHour)),
 		resetStr,
 	)
-	return tokenLine + "\n" + costLine
+	return []string{tokenLine, costLine}
 }
 
 // Helper functions
@@ -468,36 +471,44 @@ func isNumeric(s string) bool {
 	return len(s) > 0
 }
 
+// sessionRowLabel names the JSONL session block in row labels. Plans without a
+// session limit have no session to speak of, so the block is named for the time
+// it covers. A block that has ended no longer covers the last 5 hours. OAuth data
+// outranks the plan, which defaults to max5 when the tier is unknown.
+func sessionRowLabel(data DashboardData, now time.Time) string {
+	noSessionLimit := data.Limits.NoSessionLimit
+	if data.OAuthData != nil {
+		noSessionLimit = !data.OAuthData.HasSessionLimit()
+	}
+	if noSessionLimit && data.CurrentSession.EndTime.After(now) {
+		return "Last 5h"
+	}
+	return "Session"
+}
+
 // renderSessionActivity renders the session's raw cost, message count and model
 // distribution from JSONL data
-func renderSessionActivity(session *models.SessionBlock, sessionDistribution string) string {
+func renderSessionActivity(session *models.SessionBlock, rowLabel, sessionDistribution string) string {
 	whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
-	distStr := ""
-	if sessionDistribution != "" {
-		distStr = " " + sessionDistribution
-	}
-	return fmt.Sprintf("  💸 Session: %s | %s%s",
-		whiteStyle.Render(fmt.Sprintf("$%.2f", session.CostUSD)),
-		whiteStyle.Render(fmt.Sprintf("%d messages", session.MessageCount)),
-		distStr,
-	)
+	activity := whiteStyle.Render(fmt.Sprintf("$%.2f", session.CostUSD)) + " | " +
+		whiteStyle.Render(fmt.Sprintf("%d messages", session.MessageCount))
+	return formatRow("💸", rowLabel+":", activity, "", sessionDistribution)
 }
 
 // renderSessionFallback renders degraded session info when OAuth is unavailable.
 // Shows session activity and time before reset but no progress bars or
 // percentages (those require OAuth for accurate limits). showReset is false on
 // plans without a session limit.
-func renderSessionFallback(session *models.SessionBlock, sessionDistribution string, now time.Time, oauthReason string, showReset bool) []string {
+func renderSessionFallback(activityRow string, session *models.SessionBlock, now time.Time, oauthReason string, showReset bool) []string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
 	whiteStyle := lipgloss.NewStyle().Foreground(ColorWhite)
-	lines := []string{renderSessionActivity(session, sessionDistribution)}
+	lines := []string{activityRow}
 
 	// Time before reset (still computable from JSONL session blocks)
 	remaining := session.RemainingDuration(now)
 	if showReset && remaining > 0 {
-		lines = append(lines, fmt.Sprintf("  ⏱️  Time before reset: %s",
-			whiteStyle.Render(fmt.Sprintf("%.1f hours remaining", remaining.Hours())),
-		))
+		lines = append(lines, formatRow("⏱️", "Time before reset:",
+			whiteStyle.Render(fmt.Sprintf("%.1f hours remaining", remaining.Hours())), "", ""))
 	} else if session.EndTime.Before(now) {
 		lines = append(lines, dimStyle.Render("  (session data is from a previous session - run Claude Code to refresh)"))
 	}
@@ -825,7 +836,7 @@ func renderCacheHitRateLine(label string, rate float64, barWidth int, suffix str
 
 // renderSessionCacheHitRate computes and renders cache hit rate for the current session.
 // Returns empty string when there is no input activity (rate of 0% with no data is misleading).
-func renderSessionCacheHitRate(session *models.SessionBlock, barWidth int, advanced bool) string {
+func renderSessionCacheHitRate(session *models.SessionBlock, rowLabel string, barWidth int, advanced bool) string {
 	if session == nil || session.IsGap {
 		return ""
 	}
@@ -839,7 +850,7 @@ func renderSessionCacheHitRate(session *models.SessionBlock, barWidth int, advan
 		return ""
 	}
 	rate := analysis.CalculateCacheHitRate(input, cacheCreate, cacheRead)
-	return renderCacheHitRateLine("Session - Cache Hit:", rate, barWidth, sessionCache1hString(session, advanced))
+	return renderCacheHitRateLine(rowLabel+" - Cache Hit:", rate, barWidth, sessionCache1hString(session, advanced))
 }
 
 // weeklyCacheHitWarnThreshold is the rate below which the weekly cache hit row is shown.
