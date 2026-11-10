@@ -38,6 +38,22 @@ type Pricing struct {
 
 // ModelPricing contains pricing for all known models (per 1M tokens in USD)
 var ModelPricing = map[string]Pricing{
+	// Fable 5.2 undercuts Fable 5.1. Fast mode is $16 / $80.
+	"claude-fable-5-2": {
+		Input:          8.00,
+		Output:         40.00,
+		CacheCreation:  10.00,
+		CacheRead:      0.20,
+		FastMultiplier: 2,
+	},
+	// Mythos 5.2 is the same model as Fable 5.2, same pricing
+	"claude-mythos-5-2": {
+		Input:          8.00,
+		Output:         40.00,
+		CacheCreation:  10.00,
+		CacheRead:      0.20,
+		FastMultiplier: 2,
+	},
 	// Fable 5.1 is priced as Fable 5 except cache reads, which dropped to $0.25.
 	"claude-fable-5-1": {
 		Input:         10.00,
@@ -203,8 +219,8 @@ var ModelPricing = map[string]Pricing{
 // keeps or undercuts its family's newest rate, so that rate is a far better
 // estimate than the global Sonnet fallback.
 var FamilyPricing = map[string]Pricing{
-	"fable":  {Input: 10.00, Output: 50.00, CacheCreation: 12.50, CacheRead: 0.25},
-	"mythos": {Input: 10.00, Output: 50.00, CacheCreation: 12.50, CacheRead: 0.25},
+	"fable":  ModelPricing["claude-fable-5-2"],
+	"mythos": ModelPricing["claude-mythos-5-2"],
 	"opus":   ModelPricing["claude-opus-5-5"],
 	"sonnet": ModelPricing["claude-sonnet-5-5"],
 	"haiku":  ModelPricing["claude-haiku-5-5"],

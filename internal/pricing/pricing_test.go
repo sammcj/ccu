@@ -315,6 +315,18 @@ func TestLookupFallbackLadder(t *testing.T) {
 			wantSource: SourceExact,
 		},
 		{
+			name:       "fable 5.2 has its own cheaper entry",
+			model:      "claude-fable-5-2",
+			want:       Pricing{Input: 8.00, Output: 40.00, CacheCreation: 10.00, CacheRead: 0.20, FastMultiplier: 2},
+			wantSource: SourceExact,
+		},
+		{
+			name:       "mythos 5.2 shares fable 5.2's pricing",
+			model:      "claude-mythos-5-2",
+			want:       Pricing{Input: 8.00, Output: 40.00, CacheCreation: 10.00, CacheRead: 0.20, FastMultiplier: 2},
+			wantSource: SourceExact,
+		},
+		{
 			// An unreleased Opus version must cost Opus rates, not Sonnet rates.
 			name:       "unreleased opus version falls back to the opus family rate",
 			model:      "claude-opus-6",
@@ -331,7 +343,7 @@ func TestLookupFallbackLadder(t *testing.T) {
 			// These IDs do not exist. They stand in for whatever ships next and
 			// must cost Fable rates without any code change.
 			name:       "unreleased fable point release falls back to the fable family rate",
-			model:      "claude-fable-5-2-20270101",
+			model:      "claude-fable-5-3-20270101",
 			want:       FamilyPricing["fable"],
 			wantSource: SourceFamily,
 		},

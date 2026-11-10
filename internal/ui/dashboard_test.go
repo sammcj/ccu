@@ -221,10 +221,11 @@ func TestRenderEstimatedPricingNotice(t *testing.T) {
 
 	t.Run("future fable versions use fable family rates", func(t *testing.T) {
 		notice := renderEstimatedPricingNotice([]models.SessionBlock{
-			sessionUsing("claude-fable-5-2", "claude-fable-6"),
+			sessionUsing("claude-fable-5-2", "claude-fable-5-3", "claude-fable-6"),
 		})
-		assert.Contains(t, notice, "claude-fable-5-2 - using current Fable family rates")
+		assert.Contains(t, notice, "claude-fable-5-3 - using current Fable family rates")
 		assert.Contains(t, notice, "claude-fable-6 - using current Fable family rates")
+		assert.NotContains(t, notice, "claude-fable-5-2 ", "priced models must not be listed")
 	})
 
 	t.Run("unrecognised model is flagged as an estimate", func(t *testing.T) {

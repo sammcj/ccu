@@ -137,7 +137,69 @@ def stamp_config_file(path: Path, version: str, dry_run: bool) -> str | None:
     return None
 
 
-def stamp_changelog(root: Path, version: str, dry_run: bool) -> bool:
+def unreleased_bounds(lines: list[str]) -> tuple[int, int] | None:
+    """Return (heading index, end index) of the [Unreleased] section."""
+    for i, line in enumerate(lines):
+        if re.match(r"^## \[Unreleased\]", line):
+            for j in range(i + 1, len(lines)):
+                if re.match(r"^## ", lines[j]):
+                    return i, j
+            return i, len(lines)
+    return None
+
+
+def released_entries(root: Path, ref: str) -> set[str] | None:
+    """Entry lines under [Unreleased] in CHANGELOG.md at a git ref.
+
+    CI tags releases without stamping the changelog, so whatever sat under
+    [Unreleased] at the tagged commit is exactly what that release shipped.
+    """
+    result = subprocess.run(
+        ["git", "show", f"{ref}:CHANGELOG.md"],
+        capture_output=True,
+        text=True,
+        cwd=root,
+    )
+    if result.returncode != 0:
+        return None
+    lines = result.stdout.splitlines(keepends=True)
+    bounds = unreleased_bounds(lines)
+    if bounds is None:
+        return set()
+    start, end = bounds
+    return {
+        line.strip()
+        for line in lines[start + 1 : end]
+        if line.strip() and not line.startswith("#")
+    }
+
+
+def group_entries(section: list[str]) -> list[tuple[str | None, list[str]]]:
+    """Split a section into (### heading, entry lines) groups, dropping blanks."""
+    groups: list[tuple[str | None, list[str]]] = [(None, [])]
+    for line in section:
+        if line.startswith("### "):
+            groups.append((line, []))
+        elif line.strip():
+            groups[-1][1].append(line)
+    return [g for g in groups if g[1]]
+
+
+def render_groups(groups: list[tuple[str | None, list[str]]]) -> list[str]:
+    out: list[str] = []
+    for heading, entries in groups:
+        if heading:
+            out += [heading, "\n"]
+        out += entries + ["\n"]
+    return out
+
+
+def stamp_changelog(root: Path, version: str, dry_run: bool, released_ref: str | None = None) -> bool:
+    """Move released [Unreleased] entries under a [version] heading.
+
+    With released_ref, only entries present under [Unreleased] at that git ref
+    move; anything added since stays unreleased. Without it, all entries move.
+    """
     changelog = root / "CHANGELOG.md"
     if not changelog.is_file():
         print("Warning: CHANGELOG.md not found, skipping", file=sys.stderr)
@@ -146,78 +208,47 @@ def stamp_changelog(root: Path, version: str, dry_run: bool) -> bool:
     with open(changelog, encoding="utf-8") as f:
         lines = f.readlines()
 
-    unreleased_idx = None
-    for i, line in enumerate(lines):
-        if re.match(r"^## \[Unreleased\]", line):
-            unreleased_idx = i
-            break
+    if any(re.match(rf"^## \[{re.escape(version)}\]", line) for line in lines):
+        print(f"[{version}] is already in CHANGELOG.md, skipping changelog stamp", file=sys.stderr)
+        return False
 
-    if unreleased_idx is None:
+    bounds = unreleased_bounds(lines)
+    if bounds is None:
         print(
             "Warning: no '## [Unreleased]' heading found in CHANGELOG.md, skipping",
             file=sys.stderr,
         )
         return False
+    start, end = bounds
 
-    next_heading_idx = None
-    for i in range(unreleased_idx + 1, len(lines)):
-        if re.match(r"^## ", lines[i]):
-            next_heading_idx = i
-            break
+    released = None
+    if released_ref:
+        released = released_entries(root, released_ref)
+        if released is None:
+            print(f"Error: could not read CHANGELOG.md at {released_ref}", file=sys.stderr)
+            sys.exit(1)
 
-    content_end = next_heading_idx if next_heading_idx is not None else len(lines)
-    section_lines = lines[unreleased_idx + 1 : content_end]
-    has_content = any(line.strip() for line in section_lines)
+    kept: list[tuple[str | None, list[str]]] = []
+    shipped: list[tuple[str | None, list[str]]] = []
+    for heading, entries in group_entries(lines[start + 1 : end]):
+        if released is None:
+            shipped.append((heading, entries))
+            continue
+        old = [e for e in entries if e.strip() in released]
+        new = [e for e in entries if e.strip() not in released]
+        if old:
+            shipped.append((heading, old))
+        if new:
+            kept.append((heading, new))
 
-    if not has_content:
-        print(
-            "Warning: Unreleased section is empty, skipping changelog stamp",
-            file=sys.stderr,
-        )
+    if not shipped:
+        print("No released entries under [Unreleased], skipping changelog stamp", file=sys.stderr)
         return False
 
     today_str = date.today().isoformat()
-    version_heading = f"## [{version}] - {today_str}\n"
-
-    lines[unreleased_idx] = version_heading
-
-    fresh_unreleased = "## [Unreleased]\n\n"
-
-    known_bugs_idx = None
-    for i, line in enumerate(lines):
-        if re.match(r"^## Known Bugs", line):
-            known_bugs_idx = i
-            break
-
-    ai_comment_idx = None
-    changelog_heading_idx = None
-    for i, line in enumerate(lines):
-        if ai_comment_idx is None and re.match(r"^<!-- AI agents:", line):
-            ai_comment_idx = i
-        if changelog_heading_idx is None and re.match(r"^# Changelog", line):
-            changelog_heading_idx = i
-
-    stamped_heading_idx = None
-    for i, line in enumerate(lines):
-        if line == version_heading:
-            stamped_heading_idx = i
-            break
-
-    if known_bugs_idx is not None and stamped_heading_idx is not None and known_bugs_idx < stamped_heading_idx:
-        kb_content_end = stamped_heading_idx
-        while kb_content_end > known_bugs_idx + 1 and not lines[kb_content_end - 1].strip():
-            kb_content_end -= 1
-        lines = lines[:kb_content_end] + ["\n"] + [fresh_unreleased] + lines[stamped_heading_idx:]
-    elif ai_comment_idx is not None:
-        insert_at = ai_comment_idx + 1
-        lines.insert(insert_at, "\n")
-        lines.insert(insert_at + 1, fresh_unreleased)
-    elif changelog_heading_idx is not None:
-        insert_at = changelog_heading_idx + 1
-        lines.insert(insert_at, "\n")
-        lines.insert(insert_at + 1, fresh_unreleased)
-    else:
-        lines.insert(0, fresh_unreleased)
+    section = ["## [Unreleased]\n", "\n"] + render_groups(kept)
+    section += [f"## [{version}] - {today_str}\n", "\n"] + render_groups(shipped)
+    lines[start:end] = section
 
     if not dry_run:
         with open(changelog, "w", encoding="utf-8") as f:
@@ -243,7 +274,7 @@ def cmd_stamp(args: argparse.Namespace) -> None:
     changes_made = False
 
     if not args.no_changelog:
-        changed = stamp_changelog(root, version, dry_run)
+        changed = stamp_changelog(root, version, dry_run, args.released_at)
         if changed:
             today_str = date.today().isoformat()
             suffix = " (would change)" if dry_run else ""
@@ -281,6 +312,11 @@ def main() -> None:
     stamp_parser.add_argument("--dry-run", action="store_true", help="Preview changes without modifying files")
     stamp_parser.add_argument("--changelog-only", action="store_true", help="Only stamp CHANGELOG.md")
     stamp_parser.add_argument("--no-changelog", action="store_true", help="Skip CHANGELOG.md stamping")
+    stamp_parser.add_argument(
+        "--released-at",
+        metavar="REF",
+        help="Only stamp entries already under [Unreleased] at this git ref (e.g. the release tag)",
+    )
 
     args = parser.parse_args()
 

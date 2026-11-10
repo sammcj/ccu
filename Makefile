@@ -5,6 +5,7 @@ build:
 
 test:
 	go test -v -race -cover ./...
+	python3 -m unittest discover -s scripts -q
 
 lint:
 	golangci-lint run
@@ -47,7 +48,7 @@ stamp-version:
 	V=$${TAG#v}; \
 	if [ -z "$$V" ]; then echo "ERROR: no git tag found"; exit 1; fi; \
 	if command -v uv >/dev/null 2>&1; then \
-		uv run scripts/version.py stamp --version "$$V" --changelog-only; \
+		uv run scripts/version.py stamp --version "$$V" --changelog-only --released-at "$$TAG"; \
 	else \
-		python3 scripts/version.py stamp --version "$$V" --changelog-only; \
+		python3 scripts/version.py stamp --version "$$V" --changelog-only --released-at "$$TAG"; \
 	fi

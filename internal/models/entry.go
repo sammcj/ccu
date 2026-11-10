@@ -67,8 +67,8 @@ var ModelFamilies = []string{"fable", "mythos", "opus", "sonnet", "haiku"}
 // These are the versions known at build time. AdoptNewerVersions raises them as
 // Anthropic publishes new releases, so this map doesn't need a bump per release.
 var latestFamilyVersion = map[string]string{
-	"fable":  "5-1",
-	"mythos": "5-1",
+	"fable":  "5-2",
+	"mythos": "5-2",
 	"opus":   "5-5",
 	"sonnet": "5-5",
 	"haiku":  "5-5",

@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Pricing for Fable 5.2 and Mythos 5.2: $8 input, $40 output, $0.20 cache reads per million tokens, with 2x fast mode. Unversioned `fable` / `mythos` names and unknown versions now use these rates
+
 ### Changed
 
 - On Ultra, the session cost and cache hit rows are labelled `Last 5h` and `Last 5h - Cache Hit`, since the plan has no sessions. They keep the `Session` label once the 5-hour block has ended
