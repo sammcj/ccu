@@ -4,9 +4,13 @@
 
 ## [Unreleased]
 
+## [0.2.28] - 2026-11-10
+
 ### Added
 
 - Pricing for Fable 5.2 and Mythos 5.2: $8 input, $40 output, $0.20 cache reads per million tokens, with 2x fast mode. Unversioned `fable` / `mythos` names and unknown versions now use these rates
+
+## [0.2.27] - 2026-11-10
 
 ### Changed
 
