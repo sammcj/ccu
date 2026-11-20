@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- With Claude Code sessions on two accounts (e.g. Max5 and Ultra), `ccu statusline` data showed one account's stale 5-hour usage beside the other's weekly usage, and "updated X ago" gave the age of the account not in use (e.g. "4h ago" while working). Both windows now come from the one session with the most recent numbers, so an Ultra account in use shows weekly usage only
+
 ## [0.2.28] - 2026-11-10
 
 ### Added
