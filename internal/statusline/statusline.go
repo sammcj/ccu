@@ -52,6 +52,22 @@ func (w *window) valid() bool {
 	return w != nil && w.UsedPercentage != nil && w.ResetsAt != nil
 }
 
+// start is when the window began, or zero for an invalid window
+func (w *window) start(period time.Duration) time.Time {
+	if !w.valid() {
+		return time.Time{}
+	}
+	return time.Unix(int64(*w.ResetsAt), 0).Add(-period)
+}
+
+// used ranks a missing window below any usage
+func (w *window) used() float64 {
+	if !w.valid() {
+		return -1
+	}
+	return *w.UsedPercentage
+}
+
 func (w *window) equal(o *window) bool {
 	if !w.valid() || !o.valid() {
 		return w.valid() == o.valid()
@@ -187,47 +203,42 @@ func (s *snapshot) prune(now time.Time) {
 	}
 }
 
-// pick chooses which session's copy of a window to show: the one known to be
-// most recent, whatever its usage, since Anthropic can reset a limit early.
-// A copy is at least as recent as its session's last response, and as its
-// window's start, since numbers for a window only exist once it has begun. So
-// a later window beats undated copies of an earlier one, and a dated copy
-// beats undated ones in its window. Among equals the highest usage wins.
-func (s *snapshot) pick(slot func(rateLimits) *window, period time.Duration) (*window, session) {
+// freshest chooses the session whose numbers to show: the one known to be most
+// recent, whatever its usage, since Anthropic can reset a limit early. Both
+// windows come from that one session, since the payload doesn't identify the
+// Claude account and sessions on different accounts mustn't be mixed.
+//
+// A session's numbers are at least as recent as its last response and as each
+// of its windows' starts (numbers for a window only exist once it has begun).
+// Ties go to higher seven-day, then five-hour usage.
+func (s *snapshot) freshest() (session, bool) {
 	type candidate struct {
 		id       string
 		sess     session
-		w        *window
 		recentAs time.Time
 	}
 	var candidates []candidate
 	for id, sess := range s.Sessions {
-		w := slot(sess.RateLimits)
-		if !w.valid() {
+		r := sess.RateLimits
+		if !r.valid() {
 			continue
 		}
-		start := time.Unix(int64(*w.ResetsAt), 0).Add(-period)
-		candidates = append(candidates, candidate{id, sess, w, latestTime(start, sess.CalledAt)})
+		recentAs := slices.MaxFunc([]time.Time{sess.CalledAt, r.FiveHour.start(fiveHours), r.SevenDay.start(week)}, time.Time.Compare)
+		candidates = append(candidates, candidate{id, sess, recentAs})
 	}
 	if len(candidates) == 0 {
-		return nil, session{}
+		return session{}, false
 	}
 	best := slices.MaxFunc(candidates, func(a, b candidate) int {
 		return cmp.Or(
 			a.recentAs.Compare(b.recentAs),
-			cmp.Compare(*a.w.UsedPercentage, *b.w.UsedPercentage),
+			cmp.Compare(a.sess.RateLimits.SevenDay.used(), b.sess.RateLimits.SevenDay.used()),
+			cmp.Compare(a.sess.RateLimits.FiveHour.used(), b.sess.RateLimits.FiveHour.used()),
 			// Map order is random; keep the choice stable
 			strings.Compare(b.id, a.id),
 		)
 	})
-	return best.w, best.sess
-}
-
-func latestTime(a, b time.Time) time.Time {
-	if b.After(a) {
-		return b
-	}
-	return a
+	return best.sess, true
 }
 
 // Capture records the rate limits from a status line payload in the saved
@@ -365,35 +376,31 @@ func readSnapshot(path string) (*snapshot, error) {
 // without plan limits
 var ErrNoUsage = errors.New("no rate limit window recorded")
 
-// Load returns the saved rate limits as UsageData so the dashboard renders
-// them like OAuth data. FetchedAt is when a response last confirmed the older
-// of the chosen windows, or zero when either is undated. A window that reset since is reported as 0% with
-// its next reset: any Claude Code activity since then would have written newer
-// numbers. Captures can be days old, unlike OAuth data, so this can't be left
-// to UsageData.EffectiveFiveHour. Without a five-hour window FiveHour stays
-// nil, as it does for OAuth data on plans with no session limit (Ultra).
+// Load returns the saved rate limits of the session chosen by freshest as
+// UsageData so the dashboard renders them like OAuth data. Without a five-hour
+// window FiveHour stays nil, as it does for OAuth data on plans with no session
+// limit (Ultra). FetchedAt is when a response last confirmed the numbers, or
+// zero when none has. A window that reset since is reported as 0% with its next
+// reset: any Claude Code activity since then would have written newer numbers.
+// Captures can be days old, unlike OAuth data, so this can't be left to
+// UsageData.EffectiveFiveHour.
 func Load(path string, now time.Time) (*oauth.UsageData, error) {
 	s, err := readSnapshot(path)
 	if err != nil {
 		return nil, err
 	}
-	five, fiveFrom := s.pick(func(r rateLimits) *window { return r.FiveHour }, fiveHours)
-	seven, sevenFrom := s.pick(func(r rateLimits) *window { return r.SevenDay }, week)
-	if !five.valid() && !seven.valid() {
+	sess, ok := s.freshest()
+	if !ok {
 		return nil, fmt.Errorf("%s: %w", path, ErrNoUsage)
 	}
 
-	usage := &oauth.UsageData{Source: oauth.SourceStatusline}
-	if five.valid() {
+	usage := &oauth.UsageData{FetchedAt: sess.CalledAt, Source: oauth.SourceStatusline}
+	if w := sess.RateLimits.FiveHour; w.valid() {
 		usage.FiveHour = &oauth.UsageWindow{}
-		usage.FiveHour.Utilisation, usage.FiveHour.ResetsAt = rollForward(five, fiveHours, now)
-		usage.FetchedAt = fiveFrom.CalledAt
+		usage.FiveHour.Utilisation, usage.FiveHour.ResetsAt = rollForward(w, fiveHours, now)
 	}
-	if seven.valid() {
-		usage.SevenDay.Utilisation, usage.SevenDay.ResetsAt = rollForward(seven, week, now)
-		if !five.valid() || sevenFrom.CalledAt.Before(usage.FetchedAt) {
-			usage.FetchedAt = sevenFrom.CalledAt
-		}
+	if w := sess.RateLimits.SevenDay; w.valid() {
+		usage.SevenDay.Utilisation, usage.SevenDay.ResetsAt = rollForward(w, week, now)
 	}
 	return usage, nil
 }

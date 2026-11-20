@@ -15,10 +15,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Reset times used throughout: five_hour 2026-10-21 11:00 UTC, seven_day 2026-10-25 12:00 UTC
+// Reset times used throughout: five_hour 2026-10-21 11:00 UTC, seven_day 2026-10-25 12:00 UTC.
+// otherSevenReset (2026-10-23 02:00 UTC) is another account's weekly schedule.
 const (
-	fiveReset  = 1792580400
-	sevenReset = 1792929600
+	fiveReset       = 1792580400
+	sevenReset      = 1792929600
+	otherSevenReset = sevenReset - 58*3600
 )
 
 var captured = time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC)
@@ -51,6 +53,16 @@ func sessionJSON(id string, apiMS, seven float64) string {
 		"seven_day": {"used_percentage": %v, "resets_at": %d}
 	}
 }`, id, apiMS, fiveReset, seven, sevenReset)
+}
+
+// weeklyJSON is a payload from session id on an Ultra plan, which has a weekly
+// limit and no 5-hour limit, so Claude Code only sends seven_day
+func weeklyJSON(id string, apiMS, seven float64, resets int64) string {
+	return fmt.Sprintf(`{
+	"session_id": %q,
+	"cost": {"total_api_duration_ms": %v},
+	"rate_limits": {"seven_day": {"used_percentage": %v, "resets_at": %d}}
+}`, id, apiMS, seven, resets)
 }
 
 func capture(t *testing.T, path, p string, at time.Time) {
@@ -123,9 +135,9 @@ func TestCaptureMerge(t *testing.T) {
 			wantFive: 23.5, wantSeven: 41.2,
 		},
 		{
-			name:     "another undated session's higher usage is taken",
+			name:     "another undated session's higher usage is taken, windows and all",
 			second:   sessionJSON("other", 1000, 50),
-			wantFive: 23.5, wantSeven: 50,
+			wantFive: 10, wantSeven: 50,
 		},
 	}
 
@@ -142,45 +154,68 @@ func TestCaptureMerge(t *testing.T) {
 	}
 }
 
-func TestPick(t *testing.T) {
+func TestFreshest(t *testing.T) {
 	earlier, later := captured, captured.Add(time.Hour)
 	w := func(pct, resets float64) *window { return &window{UsedPercentage: &pct, ResetsAt: &resets} }
-	sess := func(called time.Time, seven *window) session {
-		return session{CalledAt: called, RateLimits: rateLimits{SevenDay: seven}}
+	sess := func(called time.Time, five, seven *window) session {
+		return session{CalledAt: called, RateLimits: rateLimits{FiveHour: five, SevenDay: seven}}
 	}
+	weekly := func(called time.Time, seven *window) session { return sess(called, nil, seven) }
 
 	tests := []struct {
 		name     string
 		sessions map[string]session
-		wantPct  float64
+		want     string
 	}{
 		{"a later window wins", map[string]session{
-			"a": sess(later, w(80, sevenReset)), "b": sess(time.Time{}, w(5, sevenReset+7*86400)),
-		}, 5},
+			"a": weekly(later, w(80, sevenReset)), "b": weekly(time.Time{}, w(5, sevenReset+7*86400)),
+		}, "b"},
 		{"an earlier window wins with a response since the later one began", map[string]session{
-			"a": sess(time.Time{}, w(80, sevenReset)), "b": sess(later, w(5, sevenReset-3*86400)),
-		}, 5},
+			"a": weekly(time.Time{}, w(80, sevenReset)), "b": weekly(later, w(5, sevenReset-3*86400)),
+		}, "b"},
 		{"the most recent response wins with lower usage", map[string]session{
-			"a": sess(earlier, w(99, sevenReset)), "b": sess(later, w(70, sevenReset)),
-		}, 70},
+			"a": weekly(earlier, w(99, sevenReset)), "b": weekly(later, w(70, sevenReset)),
+		}, "b"},
 		{"dated numbers beat higher undated ones", map[string]session{
-			"a": sess(time.Time{}, w(99, sevenReset)), "b": sess(earlier, w(70, sevenReset)),
-		}, 70},
+			"a": weekly(time.Time{}, w(99, sevenReset)), "b": weekly(earlier, w(70, sevenReset)),
+		}, "b"},
+		{"a five-hour window that began after another account's last response wins", map[string]session{
+			"a": weekly(earlier, w(50, otherSevenReset)), "b": sess(time.Time{}, w(5, fiveReset+5*3600), w(40, sevenReset)),
+		}, "b"},
 		{"undated numbers fall back to higher usage", map[string]session{
-			"a": sess(time.Time{}, w(60, sevenReset)), "b": sess(time.Time{}, w(70, sevenReset)),
-		}, 70},
+			"a": weekly(time.Time{}, w(60, sevenReset)), "b": weekly(time.Time{}, w(70, sevenReset)),
+		}, "b"},
 		{"equally dated numbers fall back to higher usage", map[string]session{
-			"a": sess(earlier, w(60, sevenReset)), "b": sess(earlier, w(70, sevenReset)),
-		}, 70},
-		{"sessions without the window are skipped", map[string]session{
-			"a": sess(later, nil), "b": sess(time.Time{}, w(70, sevenReset)),
-		}, 70},
+			"a": weekly(earlier, w(60, sevenReset)), "b": weekly(earlier, w(70, sevenReset)),
+		}, "b"},
+		{"seven-day usage outranks five-hour usage", map[string]session{
+			"a": sess(earlier, w(90, fiveReset), w(40, sevenReset)), "b": sess(earlier, w(10, fiveReset), w(50, sevenReset)),
+		}, "b"},
+		{"equal seven-day usage falls back to five-hour usage", map[string]session{
+			"a": sess(earlier, w(30, fiveReset), w(50, sevenReset)), "b": sess(earlier, w(20, fiveReset), w(50, sevenReset)),
+		}, "a"},
+		{"a missing window ranks below any usage", map[string]session{
+			"a": weekly(earlier, w(50, sevenReset)), "b": sess(earlier, w(0, fiveReset), w(50, sevenReset)),
+		}, "b"},
+		{"equal numbers keep a stable choice", map[string]session{
+			"a": weekly(earlier, w(70, sevenReset)), "b": weekly(earlier, w(70, sevenReset)),
+		}, "a"},
+		{"sessions without windows are skipped", map[string]session{
+			"a": sess(later, nil, nil), "b": weekly(time.Time{}, w(70, sevenReset)),
+		}, "b"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := snapshot{Sessions: tt.sessions}
-			got, _ := s.pick(func(r rateLimits) *window { return r.SevenDay }, week)
-			assert.InDelta(t, tt.wantPct, *got.UsedPercentage, 0.001)
+			// ChangedAt plays no part in the choice, so it can make each session
+			// distinct and show which one was returned
+			s := snapshot{Sessions: map[string]session{}}
+			for id, sess := range tt.sessions {
+				sess.ChangedAt = captured.Add(time.Duration(len(s.Sessions)) * time.Second)
+				s.Sessions[id] = sess
+			}
+			got, ok := s.freshest()
+			require.True(t, ok)
+			assert.Equal(t, s.Sessions[tt.want], got)
 		})
 	}
 }
@@ -344,6 +379,29 @@ func TestCaptureRemovesStaleTemps(t *testing.T) {
 	assert.FileExists(t, fresh, "may belong to a concurrent run")
 }
 
+// Two Claude accounts write to the same file, and the payload doesn't say
+// which is which. Both windows must come from the account in use.
+func TestLoadFollowsLatestAccount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), fileName)
+	capture(t, path, sessionJSON("a", 1000, 55), minute(0))
+	capture(t, path, sessionJSON("a", 2000, 55), minute(1))
+	capture(t, path, weeklyJSON("b", 1000, 34, otherSevenReset), minute(2))
+	capture(t, path, weeklyJSON("b", 2000, 34, otherSevenReset), minute(3))
+
+	usage := load(t, path, minute(4))
+	assert.False(t, usage.HasSessionLimit(), "account a's 5-hour window isn't shown beside b's weekly usage")
+	assert.InDelta(t, 34, usage.SevenDay.Utilisation, 0.001)
+	assert.Equal(t, "2026-10-23T02:00:00Z", usage.SevenDay.ResetsAt)
+	assert.Equal(t, minute(3), usage.FetchedAt, "dated by b's response, not a's older one")
+
+	capture(t, path, sessionJSON("a", 3000, 56), minute(5))
+	usage = load(t, path, minute(6))
+	assert.True(t, usage.HasSessionLimit())
+	assert.InDelta(t, 10, usage.FiveHour.Utilisation, 0.001)
+	assert.InDelta(t, 56, usage.SevenDay.Utilisation, 0.001)
+	assert.Equal(t, minute(5), usage.FetchedAt)
+}
+
 func TestLoadRollsWindowsForward(t *testing.T) {
 	path := filepath.Join(t.TempDir(), fileName)
 	capture(t, path, payload, captured)
@@ -363,13 +421,9 @@ func TestLoadRollsWindowsForward(t *testing.T) {
 // Ultra plans have no five-hour limit, so Claude Code only sends seven_day
 func TestLoadWeeklyOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), fileName)
-	weekly := func(apiMS int) string {
-		return fmt.Sprintf(`{"session_id": "s", "cost": {"total_api_duration_ms": %d},
-		"rate_limits": {"seven_day": {"used_percentage": 8, "resets_at": %d}}}`, apiMS, sevenReset)
-	}
-	capture(t, path, weekly(500), captured)
+	capture(t, path, weeklyJSON("s", 500, 8, sevenReset), captured)
 	// API time grew, so this response confirms the numbers as current
-	capture(t, path, weekly(900), minute(1))
+	capture(t, path, weeklyJSON("s", 900, 8, sevenReset), minute(1))
 
 	usage := load(t, path, minute(2))
 	assert.False(t, usage.HasSessionLimit())
